@@ -8,8 +8,9 @@ import (
     "bufio"
 )
 
-const defaultBufSize = 4096
+const defaultBufSize = 4096                                                                 // 默认缓冲
 
+//Dialer 是 net.Dialer 接口
 type Dialer interface {
     Dial(network, address string) (net.Conn, error)
 }
@@ -109,15 +110,16 @@ func (cs *connSingle) Close() error {
     return cs.Conn.Close()
 }
 
+//connStorage 连接存储
 type connStorage struct{
-    conn    net.Conn
-    bufr    *bufio.Reader
-    bufw    *bufio.Writer
-    use     bool
-    closed  bool
+    conn    net.Conn                // 实时连接
+    bufr    *bufio.Reader           // 缓冲读取
+    bufw    *bufio.Writer           // 缓冲写入，要记得写入之后调用 .Flush()
+    use     bool                    // 为true,正在使用这个连接
+    closed  bool                    // 连接已经关闭
 }
 
-//连接收回收，并检测有没有不请自来的数量。
+//连接收回收，并检测有没有不请自来的数据。
 //如果有，这个连接不稳定，可能会造成下次读取到错误的数据。
 //这样只能关闭这个连接
 func (cs *connStorage) loopReadUnknownData(){

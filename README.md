@@ -1,5 +1,5 @@
 # vconnpool
-go/golang TCP/UDP connection pool, 可以连接复用
+go/golang TCP/UDP connection pool, go/golang TCP/UDP 连接池， 可以复用连接
 <br/>
 列表：
 ====================

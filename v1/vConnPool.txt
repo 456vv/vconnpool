@@ -1,0 +1,28 @@
+type connAddr struct {                                                              // 连接地址
+    network, address string                                                                 // 类型，地址
+}
+type connSingle struct {                                                            // 单连接
+    net.Conn                                                                                // 连接
+    cp          *ConnPool                                                                   // 池
+    key         connAddr                                                                    // 连接地址
+    err         error                                                                       // 错误
+    count       int64                                                                       // 计数，判断还有没有数据正在读写
+    poolsrc     bool                                                                        // 连接来源，判断连接是不是从池里读出来的
+    once        sync.Once                                                                   // 一次调用，如果从池里读出的连接是已经被远程关闭的。则新创建一条连接
+    done        bool                                                                        // 判断本次读取是否完成
+}
+    func (cs *connSingle) Write(b []byte) (n int, err error)                                // 写入
+    func (cs *connSingle) Read(b []byte) (n int, err error)                                 // 读取
+    func (cs *connSingle) Close() error                                                     // 关闭连接
+
+type ConnPool struct {                                                              // 连接池
+    net.Dialer                                                                              // 拨号
+    conns       map[connAddr]chan net.Conn                                                  // 连接集
+    IdeConn     int                                                                         // 空连接数
+    m           *sync.Mutex                                                                 // 锁
+    exited      bool                                                                        // 关闭池
+}
+    func (cp *ConnPool) Dial(network, address string) (net.Conn, error)                     // 拨号
+    func (cp *ConnPool) put(conn net.Conn, key connAddr) error                              // 回收连接
+    func (cp *ConnPool) CloseIdleConnections()                                              // 关闭空闲连接
+    func (cp *ConnPool) Close()                                                             // 关闭连接池

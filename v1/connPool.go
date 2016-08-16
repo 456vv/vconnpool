@@ -8,7 +8,7 @@ import (
     "bufio"
 )
 
-const defaultBufSize = 4096                                                                 // 默认缓冲
+var DefaultReadBufSize int = 4096                                                                 // 默认读取时的缓冲区大小（单位字节）
 
 //Dialer 是 net.Dialer 接口
 type Dialer interface {
@@ -31,6 +31,7 @@ type connSingle struct {
     poolsrc     bool                                                                        // 连接来源，判断连接是不是从池里读出来的
     once        sync.Once                                                                   // 一次调用，如果从池里读出的连接是已经被远程关闭的。则新创建一条连接
     done        bool                                                                        // 判断本次读取是否完成
+    closed      bool                                                                        // 连接关闭了
 }
 
 //Write 写入
@@ -40,7 +41,7 @@ type connSingle struct {
 //      n int       成功写入字节的长度
 //      err error   错误，超时或暂时性的错误
 func (cs *connSingle) Write(b []byte) (n int, err error){
-    if cs.Conn == nil {
+    if cs.closed {
         return 0, io.EOF
     }
     n, err = cs.Conn.Write(b)
@@ -55,7 +56,7 @@ func (cs *connSingle) Write(b []byte) (n int, err error){
 //      n int       成功读取字节的长度
 //      err error   错误，超时或暂时性的错误
 func (cs *connSingle) Read(b []byte) (n int, err error){
-    if cs.Conn == nil {
+    if cs.closed {
         return 0, io.EOF
     }
     cs.count++
@@ -99,6 +100,11 @@ func (cs *connSingle) Read(b []byte) (n int, err error){
 //  返：
 //      error          错误
 func (cs *connSingle) Close() error {
+    if cs.closed {
+        return errors.New("vconnpool.connSingle.Close: 连接已经关闭了")
+    }
+    cs.closed = true
+
     //符合这几个条件，才回收到池中，其它关闭连接。
     //1，没有错误
     //2，没有正在等待读取
@@ -107,6 +113,9 @@ func (cs *connSingle) Close() error {
         cs.Conn = nil
         return cs.cp.put(cs.cs, cs.key)
     }
+    cs.cp.connNum--
+    cs.cp = nil
+    cs.cs = nil
     return cs.Conn.Close()
 }
 
@@ -141,6 +150,7 @@ func (cs *connStorage) loopReadUnknownData(){
 }
 
 func (cs *connStorage) Close() error {
+    //设置use为true，是让 .loopReadUnknownData() 可以退出
     cs.use = true
     cs.closed = true
     return cs.conn.Close()
@@ -149,10 +159,12 @@ func (cs *connStorage) Close() error {
 //ConnPool 连接池
 type ConnPool struct {
     net.Dialer                                                                              // 拨号
-    IdeConn     int                                                                         // 空连接数
+    IdeConn     int                                                                         // 空闲连接数，0为不复用连接
+    MaxConn     int                                                                         // 最大连接数，0为无限制连接
+    connNum     int                                                                         // 当前连接数
     conns       map[connAddr]chan *connStorage                                              // 连接集
     m           *sync.Mutex                                                                 // 锁
-    exited      bool                                                                        // 关闭池
+    closed      bool                                                                        // 关闭池
 }
 
 //Dial 拨号
@@ -163,7 +175,7 @@ type ConnPool struct {
 //      net.Conn            连接
 //      error               错误
 func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
-    if cp.exited {
+    if cp.closed {
         return nil, errors.New("vconnpool.ConnPool.Dial: 连接池已经被关闭")
     }
     if cp.conns ==  nil {
@@ -192,11 +204,16 @@ func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
     select {
         case connStore = <- conns:
             if connStore.closed {
+                //存储里的连接关闭，需要减少当前连接计数
+                cp.connNum--
                 goto G0
             }
             conn = connStore.conn
             pool = true
         default:
+            if cp.MaxConn != 0 && cp.connNum >= cp.MaxConn {
+                return nil, errors.New("vconnpool.ConnPool.Dial: 连接池中的连接数量已经达到最大限制")
+            }
             conn, err = cp.Dialer.Dial(network, address)
             if err != nil {
                 return nil, err
@@ -206,9 +223,10 @@ func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
             }
             //这里这么写，是方便调用 connStore.conn
             //connSingle.Read 调用失败时候会新创建连接，这样就不影响 bufr 和 bufw 这两个使用。
-            connStore.bufr= bufio.NewReaderSize(connStore.conn, defaultBufSize)
-            connStore.bufw= bufio.NewWriterSize(connStore.conn, defaultBufSize)
+            connStore.bufr= bufio.NewReaderSize(connStore.conn, DefaultReadBufSize)
+            connStore.bufw= bufio.NewWriterSize(connStore.conn, DefaultReadBufSize)
             pool = false
+            cp.connNum++
     }
 
     //设置连接在使用状态
@@ -224,7 +242,7 @@ func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
 //  返：
 //      error           错误
 func (cp *ConnPool) put(connStore *connStorage, key connAddr) error {
-    if cp.exited {
+    if cp.closed {
         return connStore.Close()
      }
 
@@ -239,6 +257,7 @@ func (cp *ConnPool) put(connStore *connStorage, key connAddr) error {
         case  cp.conns[key] <- connStore:
             return nil
         default:
+            cp.connNum--
             return connStore.Close()
     }
 }
@@ -251,7 +270,7 @@ func (cp *ConnPool) CloseIdleConnections() {
     }
 
     for _, conns := range cp.conns {
-        if cp.exited {close(conns)}
+        if cp.closed {close(conns)}
         for conn := range conns {
             conn.conn.Close()
         }
@@ -259,6 +278,7 @@ func (cp *ConnPool) CloseIdleConnections() {
 }
 // Close 关闭连接池
 func (cp *ConnPool) Close() {
-    cp.exited = true
+    cp.closed = true
+    cp.connNum = 0
     cp.CloseIdleConnections()
 }

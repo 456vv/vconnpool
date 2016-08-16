@@ -11,6 +11,7 @@ func Test_ConnPool_1(t *testing.T){
 
     cp := &ConnPool{
         IdeConn:5,
+        MaxConn:2,
     }
     defer cp.Close()
     netConn1, err := cp.Dial("tcp", "www.baidu.com:80")

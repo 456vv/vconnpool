@@ -64,7 +64,8 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
 <br/>
 使用方法：
 ====================
-例1：<br/>
+例1：
+
     func main(){
         cp := &ConnPool{
             IdeConn:5,
@@ -74,7 +75,9 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
         conn, err := cp.Dial("tcp", "www.baidu.com:80")
         fmt.Println(conn, err)
     }
-例2：<br/>
+
+例2：
+
     func main(){
         cp := &ConnPool{
             IdeConn:5,

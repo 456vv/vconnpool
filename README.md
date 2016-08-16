@@ -1,22 +1,7 @@
 # vconnpool
 go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dialer 是相同的，所以比较方便调用
 <br/>
-更新：
-====================
-    时间：2016-08-16
-    内容：1, 增加一个最大连接限制 ConnPool.MaxConn int
-          2, 增加一个可控的连接在读取数据时的缓冲区大小 var DefaultReadBufSize int = 4096
-          3, 增加8个方法：
-                func (cp *ConnPool) Put(conn net.Conn)// 增加连接
-                func (cp *ConnPool) Get(add net.Addr) (net.Conn, error)// 读取连接
-                func (cp *ConnPool) ConnNum() int// 当前连接数量
-                func (cs *connSingle) LocalAddr() net.Addr// 返回本地网络地址
-                func (cs *connSingle) RemoteAddr() net.Addr// 返回远端网络地址
-                func (cs *connSingle) SetDeadline(t time.Time) error// 设置读写超时时间
-                func (cs *connSingle) SetReadDeadline(t time.Time) error// 设置读取超时时间
-                func (cs *connSingle) SetWriteDeadline(t time.Time) error// 设置写入超时时间
-    时间：2016-08-15
-    内容：TCP连接池，已经完成。正在投入使用...
+最近更新20160816：<a href="/v1/update.txt">update.txt</a>
 <br/>
 列表：
 ====================

@@ -273,7 +273,7 @@ func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, co
         default:
             if !dial {
                 //dial设置了不需创建新连接
-                err = errors.New("vconnpool: 没有空闲的连接可以读取。或者也有可能是池中的连接失败的，不用使用。")
+                err = errors.New("vconnpool: 没有空闲的连接可以读取。或者也有可能是池中的连接失败的，不能使用。")
                 return
             }
             if cp.MaxConn != 0 && cp.connNum >= cp.MaxConn {
@@ -367,7 +367,7 @@ func (cp *ConnPool) CloseIdleConnections() {
         defer cp.m.Unlock()
     }
 
-    for _, conns := range cp.conns {
+    for k, conns := range cp.conns {
         GO:for {
         	select{
                 case connstore := <- conns:
@@ -377,7 +377,10 @@ func (cp *ConnPool) CloseIdleConnections() {
                     break GO
             }
         }
-        if cp.closed {close(conns)}
+        if cp.closed {
+            close(conns)
+            delete(cp.conns, k)
+        }
     }
 }
 // Close 关闭连接池

@@ -55,4 +55,15 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
         func (cp *ConnPool) put(conn net.Conn, key connAddr) error                  // 回收连接
         func (cp *ConnPool) CloseIdleConnections()                                  // 关闭空闲连接
         func (cp *ConnPool) Close()                                                 // 关闭连接池
-
+<br/>
+使用方法：
+====================
+	func main(){
+        cp := &ConnPool{
+            IdeConn:5,
+            MaxConn:2,
+        }
+        defer cp.Close()
+        conn, err := cp.Dial("tcp", "www.baidu.com:80")
+        fmt.Println(conn, err)
+	}

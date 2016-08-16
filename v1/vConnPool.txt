@@ -1,4 +1,4 @@
-var DefaultReadBufSize int = 4096                                       		// 默认读取时的缓冲区大小（单位字节）
+var DefaultReadBufSize int = 4096                                               // 默认读取时的缓冲区大小（单位字节）
 type Dialer interface {                                                 // net.Dialer 接口
     Dial(network, address string) (net.Conn, error)                             // 拨号
 }
@@ -17,9 +17,15 @@ type connSingle struct {                                                // 单�
     done        bool                                                            // 判断本次读取是否完成
     closed      bool                                                            // 连接关闭了
 }
+	func newConnStorage(conn net.Conn) *connStorage								// 快速生成连接存储
     func (cs *connSingle) Write(b []byte) (n int, err error)                    // 写入
     func (cs *connSingle) Read(b []byte) (n int, err error)                     // 读取
     func (cs *connSingle) Close() error                                         // 关闭连接
+    func (cs *connSingle) LocalAddr() net.Addr                                  // 返回本地网络地址
+    func (cs *connSingle) RemoteAddr() net.Addr                                 // 返回远端网络地址
+    func (cs *connSingle) SetDeadline(t time.Time) error                        // 设置读写超时时间
+    func (cs *connSingle) SetReadDeadline(t time.Time) error                    // 设置读取超时时间
+    func (cs *connSingle) SetWriteDeadline(t time.Time) error                   // 设置写入超时时间
 type connStorage struct{                                                // 连接存储
     conn    net.Conn                                                            // 实时连接
     bufr    *bufio.Reader                                                       // 缓冲读取
@@ -37,8 +43,15 @@ type ConnPool struct {                                                  // 连�
     conns       map[connAddr]chan *connStorage                                  // 连接集
     m           *sync.Mutex                                                     // 锁
     closed      bool                                                            // 关闭池
+    inited      bool                                                            // 初始化
 }
-    func (cp *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号
+    func (cp *ConnPool) init()                                                  // 初始化
+    func (cp *ConnPool) getConns(key connAddr) chan *connStorage                // 读取池连接
+    func (cp *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
+    func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, conn net.Conn, pool bool, err error) // 读取连接
+    func (cp *ConnPool) Put(conn net.Conn)                                      // 增加连接
+    func (cp *ConnPool) Get(add net.Addr) (net.Conn, error)                     // 读取连接
+    func (cp *ConnPool) ConnNum() int                                           // 当前连接数量
     func (cp *ConnPool) put(conn net.Conn, key connAddr) error                  // 回收连接
     func (cp *ConnPool) CloseIdleConnections()                                  // 关闭空闲连接
     func (cp *ConnPool) Close()                                                 // 关闭连接池

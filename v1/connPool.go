@@ -396,7 +396,9 @@ func (cp *ConnPool) ConnNumIde(network, address string) int {
 //CloseIdleConnections 关闭空闲连接池
 func (cp *ConnPool) CloseIdleConnections() {
     cp.init()
-    for k, conns := range cp.conns {
+    cp.m.Lock()
+    defer cp.m.Unlock()
+     for k, conns := range cp.conns {
         GO:for {
          	select{
                 case connstore := <- conns:

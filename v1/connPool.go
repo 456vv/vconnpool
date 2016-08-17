@@ -9,11 +9,22 @@ import (
     "time"
 )
 
+var (
+	errorConnClose = errors.New("vconnpool: 连接已经关闭了")
+	errorConnPoolClose = errors.New("vconnpool: 连接池已经被关闭")
+)
+
 var DefaultReadBufSize int = 4096                                                                 // 默认读取时的缓冲区大小（单位字节）
 
 //Dialer 是 net.Dialer 接口
 type Dialer interface {
     Dial(network, address string) (net.Conn, error)
+}
+
+//Conn 连接接口，包含了 net.Conn
+type Conn interface{
+	net.Conn        // 连接
+	Discard() error // 废弃（这条连接不再回收）
 }
 
 //connAddr 连接地址
@@ -33,6 +44,7 @@ type connSingle struct {
     once        sync.Once                                                                   // 一次调用，如果从池里读出的连接是已经被远程关闭的。则新创建一条连接
     done        bool                                                                        // 判断本次读取是否完成
     closed      bool                                                                        // 连接关闭了
+    discard     bool                                                                        // 废弃（这条连接不再回收）
 }
 
 //Write 写入
@@ -102,7 +114,7 @@ func (cs *connSingle) Read(b []byte) (n int, err error){
 //      error          错误
 func (cs *connSingle) Close() error {
     if cs.closed {
-        return errors.New("vconnpool.connSingle.Close: 连接已经关闭了")
+        return errorConnClose
     }
     cs.closed = true
 
@@ -110,7 +122,8 @@ func (cs *connSingle) Close() error {
     //1，没有错误
     //2，没有正在等待读取
     //3，本次读取完成
-    if cs.err == nil && cs.count == 0  && cs.done {
+    //4，没有被废弃
+    if cs.err == nil && cs.count == 0  && cs.done && !cs.discard {
         return cs.cp.put(cs.cs, cs.key)
     }
     cs.cp.connNum--
@@ -130,25 +143,30 @@ func (cs *connSingle) RemoteAddr() net.Addr{
 //SetDeadline 设置读写超时时间
 func (cs *connSingle) SetDeadline(t time.Time) error{
     if cs.closed {
-        return errors.New("vconnpool.connSingle.SetDeadline: 连接已经关闭了")
+        return errorConnClose
     }
     return cs.Conn.SetDeadline(t)
 }
 //SetReadDeadline 设置读取超时时间
 func (cs *connSingle) SetReadDeadline(t time.Time) error{
     if cs.closed {
-        return errors.New("vconnpool.connSingle.SetReadDeadline: 连接已经关闭了")
+        return errorConnClose
     }
     return cs.Conn.SetReadDeadline(t)
 }
 //SetWriteDeadline 设置写入超时时间
 func (cs *connSingle) SetWriteDeadline(t time.Time) error{
     if cs.closed {
-        return errors.New("vconnpool.connSingle.SetWriteDeadline: 连接已经关闭了")
+        return errorConnClose
     }
     return cs.Conn.SetWriteDeadline(t)
 }
 
+//Discard 废弃（这条连接不再回收）
+func (cs *connSingle) Discard() error {
+    cs.discard = true
+    return nil
+}
 //connStorage 连接存储
 type connStorage struct{
     conn    net.Conn                // 实时连接
@@ -242,7 +260,7 @@ func (cp *ConnPool) getConns(key connAddr) chan *connStorage {
 //      error               错误
 func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
     if cp.closed {
-        return nil, errors.New("vconnpool.ConnPool.Dial: 连接池已经被关闭")
+        return nil, errorConnPoolClose
     }
     cp.init()
 
@@ -291,7 +309,10 @@ func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, co
     return
 }
 
-//Get 从池中读取一条连接
+//Get 从池中读取一条连接。
+//读取出来的连接不会自动回收，如果你.Close() 是真的关闭连接，不是回收。
+//需要在不关闭连接的状态下，需要调用 .Put(...) 收入
+//而.Dial(...) 读取出来的连接，调用.Close() 之后，是自动收回的。.Get(...) 不是。
 //  参：
 //      addr net.Addr   地址
 //  返：
@@ -299,7 +320,7 @@ func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, co
 //      error           错误
 func (cp *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
     if cp.closed {
-        return nil, errors.New("vconnpool: 连接池已经被关闭")
+        return nil, errorConnPoolClose
     }
     cp.init()
     key := connAddr{addr.Network(), addr.String()}
@@ -359,6 +380,14 @@ func (cp *ConnPool) ConnNum() int {
     return cp.connNum
 }
 
+//ConnNumIde    当前空闲连接数量
+//  返：
+//      int     数量
+func (cp *ConnPool) ConnNumIde(network, address string) int {
+    key := connAddr{network, address}
+    conns := cp.getConns(key)
+    return len(conns)
+}
 
 //CloseIdleConnections 关闭空闲连接池
 func (cp *ConnPool) CloseIdleConnections() {
@@ -369,17 +398,17 @@ func (cp *ConnPool) CloseIdleConnections() {
 
     for k, conns := range cp.conns {
         GO:for {
-        	select{
+         	select{
                 case connstore := <- conns:
                     cp.connNum--
                     connstore.Close()
                 default:
+                   if cp.closed {
+                        close(conns)
+                        delete(cp.conns, k)
+                    }
                     break GO
             }
-        }
-        if cp.closed {
-            close(conns)
-            delete(cp.conns, k)
         }
     }
 }

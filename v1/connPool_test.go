@@ -43,14 +43,11 @@ func Test_ConnPool_2(t *testing.T){
         IdeConn:5,
     }
     defer cp.Close()
-    cp.Timeout = 1*time.Second
-    cp.KeepAlive = 1*time.Second
     netConn4, err := cp.Dial("tcp", "news.baidu.com:80")
     if err != nil {
     	t.Fatal(err)
     }
     netConn4.Close()
-
 
 }
 
@@ -60,8 +57,6 @@ func Test_ConnPool_3(t *testing.T){
         IdeConn:5,
     }
     defer cp.Close()
-    cp.Timeout = 1*time.Minute
-    cp.KeepAlive = 1*time.Minute
     netConn1, err := cp.Dial("tcp", "news.baidu.com:80")
     if err != nil {
     	t.Fatal(err)
@@ -100,8 +95,6 @@ func Test_ConnPool_4(t *testing.T){
         IdeConn:5,
     }
     defer cp.Close()
-    cp.Timeout = 1*time.Minute
-    cp.KeepAlive = 1*time.Minute
 
     netConn1, err := cp.Dial("tcp", "news.baidu.com:80")
     if err != nil {t.Fatal(err)}

@@ -205,7 +205,6 @@ func (cs *connStorage) loopReadUnknownData(){
             cs.conn.Close()
             break
         }
-        //time.Sleep(time.Millisecond)
     }
 }
 

@@ -24,7 +24,7 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
         func (cp *ConnPool) ConnNum() int                                           // 当前连接数量
         func (cp *ConnPool) ConnNumIde(network, address string) int                 // 当前连接数量(空闲)
         func (cp *ConnPool) CloseIdleConnections()                                  // 关闭空闲连接
-        func (cp *ConnPool) Close()                                                 // 关闭连接池
+        func (cp *ConnPool) Close() error                                           // 关闭连接池
 <br/>
 使用方法：
 ====================

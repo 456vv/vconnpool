@@ -231,13 +231,13 @@ func (cp *ConnPool) init(){
     if cp.inited {
         return
     }
-    cp.inited = true
     if cp.conns ==  nil {
          cp.conns = make(map[connAddr]chan *connStorage)
     }
     if cp.m == nil {
         cp.m = new(sync.Mutex)
     }
+    cp.inited = true
 }
 
 func (cp *ConnPool) getConns(key connAddr) chan *connStorage {
@@ -395,11 +395,7 @@ func (cp *ConnPool) ConnNumIde(network, address string) int {
 
 //CloseIdleConnections 关闭空闲连接池
 func (cp *ConnPool) CloseIdleConnections() {
-    if cp.m != nil {
-        cp.m.Lock()
-        defer cp.m.Unlock()
-    }
-
+    cp.init()
     for k, conns := range cp.conns {
         GO:for {
          	select{

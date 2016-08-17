@@ -124,7 +124,7 @@ func (cs *connSingle) Close() error {
     //3，本次读取完成
     //4，没有被废弃
     if cs.err == nil && cs.count == 0  && cs.done && !cs.discard {
-        return cs.cp.put(cs.cs, cs.key)
+        return cs.cp.put(cs.cs, cs.key, false)
     }
     cs.cp.connNum--
     cs.cp = nil
@@ -350,17 +350,17 @@ func (cp *ConnPool) Put(conn net.Conn) error {
     addr := conn.RemoteAddr()
     key := connAddr{addr.Network(), addr.String()}
     cp.connNum++
-    return cp.put(connStore, key)
+    return cp.put(connStore, key, true)
 }
 
 //put 回收连接
-func (cp *ConnPool) put(connStore *connStorage, key connAddr) error {
+func (cp *ConnPool) put(connStore *connStorage, key connAddr, use bool) error {
     if cp.closed {
         return connStore.Close()
      }
 
     //设置不在使用，并检查远程有没有数据发来
-    connStore.use=false
+    connStore.use=use
     go connStore.loopReadUnknownData()
 
     select {

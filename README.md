@@ -1,13 +1,17 @@
 # vconnpool
 go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dialer 是相同的，所以比较方便调用
 <br/>
-最近更新20160816：<a href="/v1/update.txt">update.txt</a>
+最近更新20160817：<a href="/v1/update.txt">update.txt</a>
 <br/>
 列表：
 ====================
     var DefaultReadBufSize int = 4096                                               // 默认读取时的缓冲区大小（单位字节）
     type Dialer interface {                                                 // net.Dialer 接口
         Dial(network, address string) (net.Conn, error)                             // 拨号
+    }
+    type Conn interface{                                                    // 连接接口
+        net.Conn                                                                    // net连接接口
+        Discard() error                                                             // 废弃（这条连接不再回收）
     }
     type ConnPool struct {                                                  // 连接池
         net.Dialer                                                                  // 拨号
@@ -16,8 +20,9 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
     }
         func (cp *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
         func (cp *ConnPool) Put(conn net.Conn)                                      // 增加连接
-        func (cp *ConnPool) Get(add net.Addr) (net.Conn, error)                     // 读取连接
+        func (cp *ConnPool) Get(add net.Addr) (net.Conn, error)                     // 读取连接，读取出来的连接不会自动回收，需要调用 .Put(...) 收入
         func (cp *ConnPool) ConnNum() int                                           // 当前连接数量
+        func (cp *ConnPool) ConnNumIde(network, address string) int                 // 当前连接数量(空闲)
         func (cp *ConnPool) CloseIdleConnections()                                  // 关闭空闲连接
         func (cp *ConnPool) Close()                                                 // 关闭连接池
 <br/>
@@ -50,3 +55,32 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
         conn, err = cp.Get(conn.RemoteAddr())
         fmt.Println(conn, err)
     }
+
+例3：
+
+    func Test_ConnPool_5(t *testing.T){
+        cp := &ConnPool{
+            IdeConn:5,
+            MaxConn:2,
+        }
+        defer cp.Close()
+        conn, err := cp.Dial("tcp", "www.baidu.com:80")
+        if err != nil {t.Fatal(err)}
+        conn.Close()
+
+        conn, err = cp.Dial("tcp", "www.baidu.com:80")
+        if err != nil {t.Fatal(err)}
+        c, ok := conn.(Conn)
+        if !ok {
+            t.Fatal("不支持转换为 Conn 接口")
+        }
+        if cp.ConnNum() != 1 {
+            t.Fatalf("池里的连接数量不符，返回为：%d，预设为：1", cp.ConnNum())
+        }
+        c.Discard()
+        c.Close()
+        if cp.ConnNum() != 0 {
+            t.Fatalf("池里的连接数量不符，返回为：%d，预设为：0", cp.ConnNum())
+        }
+    }
+

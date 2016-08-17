@@ -341,10 +341,17 @@ func (cp *ConnPool) Put(conn net.Conn) error {
         conn.Close()
         return errors.New("vconnpool: 连接池已经被关闭，当前连接也已经被关闭")
     }
+
+    //如果是 *connSingle 类型则关闭，使用自动收回，不重复回收。
+    if c, ok := conn.(*connSingle); ok {
+        return c.Close()
+    }
+
     if cp.MaxConn != 0 && cp.connNum >= cp.MaxConn {
         conn.Close()
         return errors.New("vconnpool: 连接池中的连接数量已经达到最大限制，当前连接也已经被关闭")
     }
+
     cp.init()
     connStore := newConnStorage(conn)
     addr := conn.RemoteAddr()

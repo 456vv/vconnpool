@@ -19,7 +19,7 @@ go/golang TCP/UDP connection pool, 可以连接复用，使用方法和 net.Dial
         MaxConn     int                                                             // 最大连接数，0为无限制连接
     }
         func (cp *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
-        func (cp *ConnPool) Put(conn net.Conn)                                      // 增加连接
+        func (cp *ConnPool) Put(conn net.Conn) error                                // 增加连接
         func (cp *ConnPool) Get(add net.Addr) (net.Conn, error)                     // 读取连接，读取出来的连接不会自动回收，需要调用 .Put(...) 收入
         func (cp *ConnPool) ConnNum() int                                           // 当前连接数量
         func (cp *ConnPool) ConnNumIde(network, address string) int                 // 当前连接数量(空闲)

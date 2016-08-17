@@ -384,6 +384,7 @@ func (cp *ConnPool) ConnNum() int {
 //  返：
 //      int     数量
 func (cp *ConnPool) ConnNumIde(network, address string) int {
+    cp.init()
     key := connAddr{network, address}
     conns := cp.getConns(key)
     return len(conns)

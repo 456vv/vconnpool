@@ -269,9 +269,6 @@ func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
     if err != nil {
         return nil, err
     }
-    //设置连接在使用状态
-    connStore.use = true
-
     return &connSingle{Conn:conn, cs:connStore, cp:cp, key:key, poolsrc: pool, done: true}, nil
 }
 
@@ -306,6 +303,8 @@ func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, co
             pool = false
             cp.connNum++
     }
+    //设置连接在使用状态
+    connStore.use = true
     return
 }
 

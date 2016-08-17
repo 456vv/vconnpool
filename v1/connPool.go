@@ -384,6 +384,9 @@ func (cp *ConnPool) ConnNum() int {
 //  返：
 //      int     数量
 func (cp *ConnPool) ConnNumIde(network, address string) int {
+    if cp.closed {
+        return 0
+    }
     cp.init()
     key := connAddr{network, address}
     conns := cp.getConns(key)
@@ -414,10 +417,11 @@ func (cp *ConnPool) CloseIdleConnections() {
     }
 }
 // Close 关闭连接池
-func (cp *ConnPool) Close() {
+func (cp *ConnPool) Close() error {
     if cp.closed {
-        return
+        return nil
     }
     cp.closed = true
     cp.CloseIdleConnections()
+    return nil
 }

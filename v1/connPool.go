@@ -330,12 +330,13 @@ func (cp *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
     return
 }
 
-//Put 增加一个连接到池中
+//Add 增加一个连接到池中
 //  参：
+//      addr net.Addr   存储位置Key名称
 //      conn net.Conn   连接
 //  返：
 //      error           错误
-func (cp *ConnPool) Put(conn net.Conn) error {
+func (cp *ConnPool) Add(addr net.Addr, conn net.Conn) error {
     if cp.closed {
         //池被关闭了，由于是空闲连接，就关闭它。
         conn.Close()
@@ -354,7 +355,6 @@ func (cp *ConnPool) Put(conn net.Conn) error {
 
     cp.init()
     connStore := newConnStorage(conn)
-    addr := conn.RemoteAddr()
     key := connAddr{addr.Network(), addr.String()}
     cp.connNum++
     return cp.put(connStore, key, true)

@@ -127,7 +127,7 @@ func Test_ConnPool_4(t *testing.T){
     netConn3, err := net.Dial("tcp", "news.baidu.com:80")
     if err != nil {t.Fatal(err)}
     defer netConn3.Close()
-    err = cp.Put(netConn3)
+    err = cp.Add(netConn3.RemoteAddr(), netConn3)
     if err != nil {t.Fatal(err)}
     if cp.ConnNum() != 2 {
         t.Fatalf("netConn3:池里的‘可用’连接数量不符，返回为：%d，预设为：2", cp.ConnNum())
@@ -136,7 +136,7 @@ func Test_ConnPool_4(t *testing.T){
     netConn4, err := net.Dial("tcp", "news.baidu.com:80")
     if err != nil {t.Fatal(err)}
     defer netConn4.Close()
-    err = cp.Put(netConn4)
+    err = cp.Add(netConn4.RemoteAddr(), netConn4)
     if err != nil {t.Fatal(err)}
     if cp.ConnNum() != 3 {
         t.Fatalf("netConn4:池里的连接数量不符，返回为：%d，预设为：3", cp.ConnNum())

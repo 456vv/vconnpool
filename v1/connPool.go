@@ -7,6 +7,7 @@ import (
     "io"
     "bufio"
     "time"
+    "fmt"
 )
 
 var (
@@ -288,7 +289,7 @@ func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, co
         default:
             if !dial {
                 //dial设置了不需创建新连接
-                err = errors.New("vconnpool: 没有空闲的连接可以读取。或者也有可能是池中的连接失败的，不能使用。")
+                err = fmt.Errorf("vconnpool: 读取 %v，没有空闲的连接可以读取。或者也有可能是池中的连接失败的，不能使用。", key)
                 return
             }
             if cp.MaxConn != 0 && cp.connNum >= cp.MaxConn {
@@ -356,7 +357,6 @@ func (cp *ConnPool) Add(addr net.Addr, conn net.Conn) error {
     cp.init()
     connStore := newConnStorage(conn)
     key := connAddr{addr.Network(), addr.String()}
-    cp.connNum++
     return cp.put(connStore, key, true)
 }
 
@@ -372,9 +372,16 @@ func (cp *ConnPool) put(connStore *connStorage, key connAddr, use bool) error {
 
     select {
         case  cp.getConns(key) <- connStore:
+            //如果来自Add调用，需要增加成功后，加计数
+            if use {
+                cp.connNum++
+            }
             return nil
         default:
-            cp.connNum--
+            //如果来Dial,需在减计数。由于在Dial在创建连接时候，已经加了计数
+            if !use {
+                cp.connNum--
+            }
             return connStore.Close()
     }
 }

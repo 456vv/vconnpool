@@ -1,7 +1,7 @@
 # vconnpool [![Build Status](https://travis-ci.org/456vv/vconnpool.svg?branch=master)](https://travis-ci.org/456vv/vconnpool)
 go/golang TCP connection pool, 可以连接复用，使用方法和 net.Dialer 是相同的，所以比较方便调用
 <br/>
-最近更新20160819：<a href="/v1/update.txt">update.txt</a>
+最近更新20160820：<a href="/v1/update.txt">update.txt</a>
 <br/>
 列表：
 ====================

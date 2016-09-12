@@ -1,6 +1,7 @@
 var DefaultReadBufSize int = 4096                                               // 默认读取时的缓冲区大小（单位字节）
 type Dialer interface {                                                 // net.Dialer 接口
     Dial(network, address string) (net.Conn, error)                             // 拨号
+    DialContext(ctx context.Context, network, address string) (net.Conn, error) // 拨号（支持上下文）
 }
 type Conn interface{                                                    // 连接接口
     net.Conn                                                                    // net连接接口
@@ -14,6 +15,7 @@ type connSingle struct {                                                // 单�
     cs          *connStorage                                                    // 连接存储
     cp          *ConnPool                                                       // 池
     key         connAddr                                                        // 连接地址
+    ctx         context.Context                                                 // 上下文
     err         error                                                           // 错误
     count       int64                                                           // 计数，判断还有没有数据正在读写
     poolsrc     bool                                                            // 连接来源，判断连接是不是从池里读出来的
@@ -54,6 +56,7 @@ type ConnPool struct {                                                  // 连�
     func (cp *ConnPool) init()                                                  // 初始化
     func (cp *ConnPool) getConns(key connAddr) chan *connStorage                // 读取池连接
     func (cp *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
+    func (cp *ConnPool) DialContext(ctx context.Context, network, address string) (net.Conn, error) //拨号（支持上下文）,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
     func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, conn net.Conn, pool bool, err error) // 读取连接
     func (cp *ConnPool) Add(addr net.Addr, conn net.Conn) error                 // 增加连接
     func (cp *ConnPool) Get(addr net.Addr) (net.Conn, error)                    // 读取连接，读取出来的连接不会自动回收，需要调用 .Add(...) 收入

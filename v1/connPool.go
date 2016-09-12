@@ -8,6 +8,7 @@ import (
     "bufio"
     "time"
     "fmt"
+    "context"
 )
 
 var (
@@ -20,6 +21,7 @@ var DefaultReadBufSize int = 4096                                               
 //Dialer 是 net.Dialer 接口
 type Dialer interface {
     Dial(network, address string) (net.Conn, error)
+    DialContext(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 //Conn 连接接口，包含了 net.Conn
@@ -39,6 +41,7 @@ type connSingle struct {
     cs          *connStorage                                                                // 连接存储
     cp          *ConnPool                                                                   // 池
     key         connAddr                                                                    // 连接地址
+    ctx         context.Context                                                             // 上下文
     err         error                                                                       // 错误
     count       int64                                                                       // 计数，判断还有没有数据正在读写
     poolsrc     bool                                                                        // 连接来源，判断连接是不是从池里读出来的
@@ -87,7 +90,7 @@ func (cs *connSingle) Read(b []byte) (n int, err error){
         if cs.poolsrc && err == io.EOF {
             //池里的连接被远程关闭了
             //重新创建一个连接
-            conn, e := cs.cp.Dialer.Dial(cs.key.network, cs.key.address)
+            conn, e := cs.cp.Dialer.DialContext(cs.ctx, cs.key.network, cs.key.address)
             if e != nil {
                 return
             }
@@ -260,20 +263,34 @@ func (cp *ConnPool) getConns(key connAddr) chan *connStorage {
 //      net.Conn            连接
 //      error               错误
 func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
+    return cp.DialContext(context.Background(), network, address)
+}
+
+//DialContext 拨号
+//  参：
+//      ctx context.Context 上下文
+//      network string      连接类型
+//      address string      连接地址
+//  返：
+//      net.Conn            连接
+//      error               错误
+func (cp *ConnPool) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
     if cp.closed {
         return nil, errorConnPoolClose
     }
     cp.init()
 
     key := connAddr{network, address}
-    connStore, conn, pool, err := cp.getConn(key, true)
+    connStore, conn, pool, err := cp.getConn(ctx, key, true)
     if err != nil {
         return nil, err
     }
-    return &connSingle{Conn:conn, cs:connStore, cp:cp, key:key, poolsrc: pool, done: true}, nil
+    return &connSingle{Conn:conn, cs:connStore, cp:cp, key:key, ctx: ctx, poolsrc: pool, done: true}, nil
 }
 
-func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, conn net.Conn, pool bool, err error) {
+
+
+func (cp *ConnPool) getConn(ctx context.Context, key connAddr, dial bool) (connStore *connStorage, conn net.Conn, pool bool, err error) {
     //读取的时要注意 host 或 ip，如果你使用 .Dialer 访问并回收连接，之后使用 .Get 读取连接。
     //要注意了，.Dialer 是以 hostname 作为 key 存储，而 .Get 读取是以 IP，所以可能、可能、可能会读不出接连。
     G0:
@@ -296,7 +313,7 @@ func (cp *ConnPool) getConn(key connAddr, dial bool) (connStore *connStorage, co
                 err = errors.New("vconnpool: 连接池中的连接数量已经达到最大限制")
                 return
             }
-            conn, err = cp.Dialer.Dial(key.network, key.address)
+            conn, err = cp.Dialer.DialContext(ctx, key.network, key.address)
             if err != nil {
                 return
             }
@@ -324,7 +341,7 @@ func (cp *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
     }
     cp.init()
     key := connAddr{addr.Network(), addr.String()}
-    _, conn, _, err = cp.getConn(key, false)
+    _, conn, _, err = cp.getConn(nil, key, false)
     if err == nil {
         cp.connNum--
     }

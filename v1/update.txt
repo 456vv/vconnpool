@@ -1,3 +1,5 @@
+时间：2017-05-11
+内容：1, 增加方法 func (cs *connSingle) IsReuseConn() bool，判断这条连接是否之前使用过。
 时间：2016-09-12
 内容：1, 更新至支持go 1.7版本，增加方法 DialContext(ctx context.Context, network, address string) (net.Conn, error)
 时间：2016-08-20

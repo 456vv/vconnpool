@@ -6,6 +6,7 @@ type Dialer interface {                                                 // net.D
 type Conn interface{                                                    // 连接接口
     net.Conn                                                                    // net连接接口
     Discard() error                                                             // 废弃（这条连接不再回收）
+    IsReuseConn() bool                                                          // 判断这条连接是否是从池中读取出来的
 }
 type connAddr struct {                                                  // 连接地址
     network, address string                                                     // 类型，地址
@@ -33,7 +34,8 @@ type connSingle struct {                                                // 单�
     func (cs *connSingle) SetDeadline(t time.Time) error                        // 设置读写超时时间
     func (cs *connSingle) SetReadDeadline(t time.Time) error                    // 设置读取超时时间
     func (cs *connSingle) SetWriteDeadline(t time.Time) error                   // 设置写入超时时间
-    func (cs *connSingle) Discard() error                                        // 废弃（这条连接不再回收）
+    func (cs *connSingle) Discard() error                                       // 废弃（这条连接不再回收）
+    func (cs *connSingle) IsReuseConn() bool                                    // 是否是重用连接
 type connStorage struct{                                                // 连接存储
     conn    net.Conn                                                            // 实时连接
     bufr    *bufio.Reader                                                       // 缓冲读取

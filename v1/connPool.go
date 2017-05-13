@@ -26,8 +26,9 @@ type Dialer interface {
 
 //Conn 连接接口，包含了 net.Conn
 type Conn interface{
-	net.Conn        // 连接
-	Discard() error // 废弃（这条连接不再回收）
+	net.Conn        	// 连接
+	Discard() error 	// 废弃（这条连接不再回收）
+	IsReuseConn() bool	// 判断这条连接是否是从池中读取出来的
 }
 
 //connAddr 连接地址
@@ -117,6 +118,13 @@ func (cs *connSingle) Read(b []byte) (n int, err error){
 //  返：
 //      error          错误
 func (cs *connSingle) Close() error {
+	err := cs.close()
+	if err != nil {
+		return err
+	}
+    return cs.Conn.Close()
+}
+func (cs *connSingle) close() error {
     if cs.closed {
         return errorConnClose
     }
@@ -133,7 +141,7 @@ func (cs *connSingle) Close() error {
     cs.cp.connNum--
     cs.cp = nil
     cs.cs = nil
-    return cs.Conn.Close()
+	return nil
 }
 
 //LocalAddr 返回本地网络地址
@@ -171,6 +179,12 @@ func (cs *connSingle) Discard() error {
     cs.discard = true
     return nil
 }
+
+//IsReuseConn 是否是重用连接
+func (cs *connSingle) IsReuseConn() bool {
+	return cs.poolsrc
+}
+
 //connStorage 连接存储
 type connStorage struct{
     conn    net.Conn                // 实时连接

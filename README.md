@@ -1,17 +1,19 @@
 # vconnpool [![Build Status](https://travis-ci.org/456vv/vconnpool.svg?branch=master)](https://travis-ci.org/456vv/vconnpool)
 go/golang TCP connection pool, 可以连接复用，使用方法和 net.Dialer 是相同的，所以比较方便调用
 <br/>
-最近更新20160912：<a href="/v1/update.txt">update.txt</a>
+最近更新20170511：<a href="/v1/update.txt">update.txt</a>
 <br/>
 列表：
 ====================
     var DefaultReadBufSize int = 4096                                               // 默认读取时的缓冲区大小（单位字节）
     type Dialer interface {                                                 // net.Dialer 接口
         Dial(network, address string) (net.Conn, error)                             // 拨号
+    	DialContext(ctx context.Context, network, address string) (net.Conn, error) // 拨号（支持上下文）
     }
     type Conn interface{                                                    // 连接接口
         net.Conn                                                                    // net连接接口
         Discard() error                                                             // 废弃（这条连接不再回收）
+        IsReuseConn() bool															// 判断这条连接是否是从池中读取出来的
     }
     type ConnPool struct {                                                  // 连接池
         net.Dialer                                                                  // 拨号
@@ -29,6 +31,7 @@ go/golang TCP connection pool, 可以连接复用，使用方法和 net.Dialer �
 <br/>
 使用方法：
 ====================
+
 例1：
 
     func main(){

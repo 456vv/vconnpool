@@ -8,12 +8,12 @@ go/golang TCP connection pool, 可以连接复用，使用方法和 net.Dialer �
     var DefaultReadBufSize int = 4096                                               // 默认读取时的缓冲区大小（单位字节）
     type Dialer interface {                                                 // net.Dialer 接口
         Dial(network, address string) (net.Conn, error)                             // 拨号
-    	DialContext(ctx context.Context, network, address string) (net.Conn, error) // 拨号（支持上下文）
+        DialContext(ctx context.Context, network, address string) (net.Conn, error) // 拨号（支持上下文）
     }
     type Conn interface{                                                    // 连接接口
         net.Conn                                                                    // net连接接口
         Discard() error                                                             // 废弃（这条连接不再回收）
-        IsReuseConn() bool															// 判断这条连接是否是从池中读取出来的
+        IsReuseConn() bool                                                          // 判断这条连接是否是从池中读取出来的
     }
     type ConnPool struct {                                                  // 连接池
         net.Dialer                                                                  // 拨号

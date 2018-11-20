@@ -1,0 +1,25 @@
+时间：2018-06-18
+内容：1，修复连接计数准确，使用原子。
+时间：2017-05-11
+内容：1, 增加方法 func (cs *connSingle) IsReuseConn() bool，判断这条连接是否之前使用过。
+时间：2016-09-12
+内容：1, 更新至支持go 1.7版本，增加方法 DialContext(ctx context.Context, network, address string) (net.Conn, error)
+时间：2016-08-20
+内容：1, 修复连接计数准确。
+时间：2016-08-19
+内容：1, 增加1个方法 func (cp *ConnPool) Add(addr net.Addr, conn net.Conn) error
+      2, 删除1个方法 func (cp *ConnPool) Put(conn net.Conn) error
+      由于 Add 方法使用更方便，更广泛。
+时间：2016-08-17
+内容：1, 增加1个方法：
+            func (cp *ConnPool) ConnNumIde(network, address string) int// 当前连接数量(空闲)
+时间：2016-08-16
+内容：1, 增加一个最大连接限制 ConnPool.MaxConn int
+      2, 增加一个可控的连接在读取数据时的缓冲区大小 var DefaultReadBufSize int = 4096
+      3, 增加3个方法：
+            func (cp *ConnPool) Put(conn net.Conn) error// 增加连接
+            func (cp *ConnPool) Get(add net.Addr) (net.Conn, error)// 读取连接
+            func (cp *ConnPool) ConnNum() int// 当前连接数量
+      4，增加一个 Conn 接口，包含了一个 Discard() error 方法。用于废弃当前这条连接。
+时间：2016-08-15
+内容：TCP连接池，已经完成。正在投入使用...

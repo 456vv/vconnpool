@@ -185,7 +185,7 @@ func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
     return cp.DialContext(context.Background(), network, address)
 }
 
-//DialContext 拨号
+//DialContext 拨号，如果ctx 携带键值是（priority=true）,是创建新连接，否则从池中读取。
 //	ctx context.Context 上下文
 //	network string      连接类型
 //	address string      连接地址
@@ -246,7 +246,7 @@ func (cp *ConnPool) getConn(ctx context.Context, key connAddr, dial bool) (conn 
        			atomic.AddInt32(&cp.connNum, -1)
     			goto G1
     		default:
-    		} 
+    		}
     	}
     default:
         if !dial {
@@ -262,7 +262,7 @@ func (cp *ConnPool) getConn(ctx context.Context, key connAddr, dial bool) (conn 
 
 //Get 从池中读取一条连接。
 //读取出来的连接不会自动回收，如果你.Close() 是真的关闭连接，不是回收。
-//需要在不关闭连接的状态下，需要调用 .Put(...) 收入
+//需要在不关闭连接的状态下，需要调用 .Add(...) 收入
 //而.Dial(...) 读取出来的连接，调用.Close() 之后，是自动收回的。.Get(...) 不是。
 //	addr net.Addr   地址
 //	conn net.Conn   连接
@@ -294,9 +294,7 @@ func (cp *ConnPool) Add(addr net.Addr, conn net.Conn) error {
     
     //如果是 *connSingle 类型则关闭，使用自动收回，不重复回收。
     if c, ok := conn.(*connSingle); ok {
-    	conn = c.Conn
-   		atomic.AddInt32(&cp.connNum, -1)
-        //return c.Close()
+    	return c.Close()
     }
 
     if cp.MaxConn != 0 && int(atomic.LoadInt32(&cp.connNum)) >= cp.MaxConn {

@@ -4,6 +4,7 @@ import (
 	"testing"
     "time"
     "net"
+    "context"
 )
 
 
@@ -223,4 +224,48 @@ func Test_ConnPool_6(t *testing.T){
 
 }
 
+func Test_ConnPool_7(t *testing.T){
+   cp := &ConnPool{
+        IdeConn:5,
+        MaxConn:2,
+    }
+    defer cp.Close()
+    conn, err := cp.Dial("tcp", "8.8.8.8:53")
+    if err != nil {t.Fatal(err)}
+    conn.Close()
+    
+    ctx := context.WithValue(context.Background(), "priority", true) //新创建连接
+    conn, err = cp.DialContext(ctx, "tcp", "8.8.8.8:53")
+    if err != nil {t.Fatal(err)}
+    addr := conn.RemoteAddr()
+    conn.Close()
+    
+    conn, err = cp.Get(addr)
+    if err != nil {t.Fatal(err)}
+    
+    err = cp.Add(conn.RemoteAddr(), conn)
+    if err != nil {t.Fatal(err)}
+    
+    connNumIde := cp.ConnNumIde(addr.Network(), addr.String())
+    if connNumIde != 2 {
+        t.Fatalf("空闲连接数量不符，预设：%d，真实是：%d", 2, connNumIde)
+    }
+    conn.Close()
+    
+    cp.ClearInvalidConnection()
+    connNumIde = cp.ConnNumIde(addr.Network(), addr.String())
+    if connNumIde != 1 {
+        t.Fatalf("空闲连接数量不符，预设：%d，真实是：%d", 1, connNumIde)
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
 
+}

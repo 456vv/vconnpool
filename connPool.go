@@ -362,6 +362,45 @@ func (cp *ConnPool) CloseIdleConnections() {
         }
     }
 }
+
+//ClearInvalidConnection 关闭无效的连接，由于连接在池中时间过长，可能对方已经关闭连接，造成死连接，占用池中资源。
+func (cp *ConnPool) ClearInvalidConnection() {
+    cp.m.Lock()
+    defer cp.m.Unlock()
+    cp.init()
+    var closenum int32
+    for _, conns := range cp.conns {
+     	 
+     	 var tconns []net.Conn
+     	 
+     	//取出连接，判断是否有效
+        G1:for {
+         	select{
+            case conn := <- conns:
+        		select{
+        		case <-conn.(vconn.CloseNotifier).CloseNotify():
+        			closenum--
+        		default:
+        			tconns = append(tconns, conn)
+        		}
+            default:
+                break G1
+            }
+        }
+        
+        //重新装入连接
+        for _, conn := range tconns {
+        	select{
+        	case conns <- conn:
+        	default:
+        		closenum--
+        		conn.Close()
+        	}
+        }
+    }
+	atomic.AddInt32(&cp.connNum, closenum)
+}
+
 // Close 关闭连接池
 func (cp *ConnPool) Close() error {
     if cp.closed.setTrue() {

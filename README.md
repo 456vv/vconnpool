@@ -19,12 +19,13 @@ type ConnPool struct {                                                  // 连�
     MaxConn     int                                                             // 最大连接数，0为无限制连接
     IdeTimeout  time.Duration                                                   // 空闲自动超时，0为不超时
 }
-    func (cp *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
-    func (cp *ConnPool) DialContext(ctx context.Context, network, address string) (net.Conn, error) //拨号（支持上下文）,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
-    func (cp *ConnPool) Add(conn net.Conn) error                                // 增加连接
-    func (cp *ConnPool) Get(addr net.Addr) (net.Conn, error)                    // 读取连接，读取出来的连接不会自动回收，需要调用 .Add(...) 收入
-    func (cp *ConnPool) ConnNum() int                                           // 当前连接数量
-    func (cp *ConnPool) ConnNumIde(network, address string) int                 // 当前连接数量(空闲)，不是实时的空闲连接数，存在多线程！
-    func (cp *ConnPool) CloseIdleConnections()                                  // 关闭空闲连接
-    func (cp *ConnPool) Close() error                                           // 关闭连接池
+    func (T *ConnPool) Dial(network, address string) (net.Conn, error)         // 拨号,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
+    func (T *ConnPool) DialContext(ctx context.Context, network, address string) (net.Conn, error) //拨号（支持上下文）,如果 address 参数是host域名，.Get(...)将无法读取到连接。请再次使用 .Dial(...) 来读取。
+    func (T *ConnPool) Add(conn net.Conn) error                                // 增加连接
+    func (T *ConnPool) Put(conn net.Conn, addr net.Addr) error                 // 增加连接，支持 addr
+    func (T *ConnPool) Get(addr net.Addr) (net.Conn, error)                    // 读取连接，读取出来的连接不会自动回收，需要调用 .Add(...) 收入
+    func (T *ConnPool) ConnNum() int                                           // 当前连接数量
+    func (T *ConnPool) ConnNumIde(network, address string) int                 // 当前连接数量(空闲)，不是实时的空闲连接数，存在多线程！
+    func (T *ConnPool) CloseIdleConnections()                                  // 关闭空闲连接
+    func (T *ConnPool) Close() error                                           // 关闭连接池
 ```

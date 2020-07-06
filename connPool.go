@@ -528,7 +528,7 @@ func (T *ConnPool) Add(conn net.Conn) error {
 	return T.Put(conn, conn.RemoteAddr())
 }
 
-//Add 增加一个连接到池中，适用于 Dial 和 listen 的连接。
+//Put 增加一个连接到池中，适用于 Dial 和 listen 的连接。
 //Dial 连接使用RemoteAddr，listen 连接使用LocalAddr 为做 addr
 //	conn net.Conn   连接
 //	addr net.Addr	地址，作为池的 key 存放

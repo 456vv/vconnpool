@@ -39,7 +39,7 @@ type Conn interface{
 	net.Conn        	// 连接
 	Discard() error 	// 废弃（这条连接不再回收）
 	IsReuseConn() bool	// 判断这条连接是否是从池中读取出来的
-	RAWConn() net.Conn
+	RAWConn() net.Conn	// 原始连接，这个连接使用 Close 关闭后，不会回收
 }
 
 
@@ -346,7 +346,7 @@ func parseKey(network, address string) string {
 type ConnPool struct {
     *net.Dialer                                                                             // 拨号
     IdeConn     int                                                                         // 空闲连接数，0为不复用连接
-    IdeTimeout	time.Duration																// 空闲自动超时
+    IdeTimeout	time.Duration																// 空闲自动超时，0为不超时
     MaxConn     int                                                                         // 最大连接数，0为无限制连接
     connNum     int32                                                                       // 当前连接数
     conns       map[string]*pools                                              				// 连接集,RemoteAddr

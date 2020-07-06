@@ -1,5 +1,4 @@
-module github.com/456vv/vconnpool
+module github.com/456vv/vconnpool/v2
 
 go 1.14
 
-//require github.com/456vv/vconn latest

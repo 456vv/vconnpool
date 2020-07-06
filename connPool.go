@@ -6,20 +6,21 @@ import (
     "sync"
     "io"
     "time"
-    "fmt"
     "context"
     "sync/atomic"
     "github.com/456vv/vconn"
 )
 
 var (
-	errorConnClose 		= errors.New("vconnpool: 连接已经关闭了")
-	errorConnPoolClose 	= errors.New("vconnpool: 连接池已经被关闭")
-	errorConnPoolMax 	= errors.New("vconnpool: 连接池中的连接数量已经达到最大限制")
-
+	errorConnClose 			= errors.New("vconnpool: The connection is closed")
+	errorConnPoolClose 		= errors.New("vconnpool: The connection pool has been closed")
+	errorConnPoolMax 		= errors.New("vconnpool: The number of connections in the connection pool has reached the maximum limit")
+	errorConnRAWRead 		= errors.New("vconnpool: The original connection cannot be read repeatedly")
+	
+	errorConnNotAvailable 	= errors.New("No connections available in the pool")
+	errorPoolFull 			= errors.New("The number of idle connections has reached the maximum")
 )
 
-//响应完成设置
 type atomicBool int32
 func (T *atomicBool) isTrue() bool 	{ return atomic.LoadInt32((*int32)(T)) != 0 }
 func (T *atomicBool) isFalse() bool	{ return atomic.LoadInt32((*int32)(T)) != 1 }
@@ -38,193 +39,459 @@ type Conn interface{
 	net.Conn        	// 连接
 	Discard() error 	// 废弃（这条连接不再回收）
 	IsReuseConn() bool	// 判断这条连接是否是从池中读取出来的
+	RAWConn() net.Conn
 }
 
-//connAddr 连接地址
-type connAddr struct {
-    network, address string                                                                 // 类型，地址
-}
 
 //connSingle 单连接
 type connSingle struct {
     net.Conn                                                                                // 连接
+    addr		net.Addr																	// 地址用于回收识别
     cp          *ConnPool                                                                   // 池
-    key         connAddr                                                                    // 连接地址
     isPool     	bool                                                                        // 连接来源，判断连接是不是从池里读出来的
     closed      atomicBool                                                                  // 连接关闭了
     discard     atomicBool                                                                  // 废弃（这条连接不再回收）
+    rawRead		atomicBool
 }
 
 //Write 写入
 //	b []byte    写入字节
 //	n int       成功写入字节的长度
 //	err error   错误，超时或暂时性的错误
-func (cs *connSingle) Write(b []byte) (n int, err error){
-    if cs.closed.isTrue() {
+func (T *connSingle) Write(b []byte) (n int, err error){
+    if T.closed.isTrue() {
         return 0, io.EOF
     }
-    return cs.Conn.Write(b)
+    return T.Conn.Write(b)
 }
 
 //Read 读取
 //	b []byte    字节写入到b
 //	n int       成功读取字节的长度
 //	err error   错误，超时或暂时性的错误
-func (cs *connSingle) Read(b []byte) (n int, err error){
-    if cs.closed.isTrue() {
+func (T *connSingle) Read(b []byte) (n int, err error){
+    if T.closed.isTrue() {
         return 0, io.EOF
     }
-    return cs.Conn.Read(b)
+    return T.Conn.Read(b)
 }
 
 //Close 关闭连接
 //	error          错误
-func (cs *connSingle) Close() error {
-    if cs.closed.setTrue() {
+func (T *connSingle) Close() error {
+    if T.rawRead.isTrue() {
+    	return nil
+    }
+    if T.closed.setTrue() {
         return errorConnClose
     }
     
-    notifier, ok := cs.Conn.(vconn.CloseNotifier)
-    if ok && cs.discard.isFalse() {
+    notifier, ok := T.Conn.(vconn.CloseNotifier)
+    if ok && T.discard.isFalse() {
     	select {
     	case <-notifier.CloseNotify():
     		//连接已经关闭
     	default:
-    		return cs.cp.put(cs.key, cs.Conn)
+    		err := T.cp.putPoolConn(T.Conn, T.addr)
+    		if err == nil {
+    			//回收成功
+    			return nil
+    		}
     	}
     }
-    atomic.AddInt32(&cs.cp.connNum, -1)
-	return cs.Conn.Close()
+   	atomic.AddInt32(&T.cp.connNum, -1)
+	return T.Conn.Close()
 }
 
 //LocalAddr 返回本地网络地址
-func (cs *connSingle) LocalAddr() net.Addr{
-    return cs.Conn.LocalAddr()
+func (T *connSingle) LocalAddr() net.Addr{
+    return T.Conn.LocalAddr()
 }
+
 //RemoteAddr 返回远端网络地址
-func (cs *connSingle) RemoteAddr() net.Addr{
-    return cs.Conn.RemoteAddr()
+func (T *connSingle) RemoteAddr() net.Addr{
+    return T.Conn.RemoteAddr()
 }
+
 //SetDeadline 设置读写超时时间
-func (cs *connSingle) SetDeadline(t time.Time) error{
-    if cs.closed.isTrue() {
+func (T *connSingle) SetDeadline(t time.Time) error{
+    if T.closed.isTrue() {
         return errorConnClose
     }
-    return cs.Conn.SetDeadline(t)
+    return T.Conn.SetDeadline(t)
 }
+
 //SetReadDeadline 设置读取超时时间
-func (cs *connSingle) SetReadDeadline(t time.Time) error{
-    if cs.closed.isTrue() {
+func (T *connSingle) SetReadDeadline(t time.Time) error{
+    if T.closed.isTrue() {
         return errorConnClose
     }
-    return cs.Conn.SetReadDeadline(t)
+    return T.Conn.SetReadDeadline(t)
 }
+
 //SetWriteDeadline 设置写入超时时间
-func (cs *connSingle) SetWriteDeadline(t time.Time) error{
-    if cs.closed.isTrue() {
+func (T *connSingle) SetWriteDeadline(t time.Time) error{
+    if T.closed.isTrue() {
         return errorConnClose
     }
-   return cs.Conn.SetWriteDeadline(t)
+   return T.Conn.SetWriteDeadline(t)
 }
 
 //Discard 废弃（这条连接不再回收）
-func (cs *connSingle) Discard() error {
-    cs.discard.setTrue()
+func (T *connSingle) Discard() error {
+    T.discard.setTrue()
     return nil
 }
 
 //IsReuseConn 是否是重用连接
-func (cs *connSingle) IsReuseConn() bool {
-	return cs.isPool
+func (T *connSingle) IsReuseConn() bool {
+	return T.isPool
 }
 
+func (T *connSingle) RAWConn() net.Conn {
+	if T.rawRead.setTrue() {
+		panic(errorConnRAWRead)
+	}
+	if T.closed.setTrue() {
+	    panic(errorConnClose)
+	}
+    
+   	atomic.AddInt32(&T.cp.connNum, -1)
+    conn := T.Conn
+    T.Conn = nil
+    T.cp = nil
+	return conn
+}
+
+type connMan struct {
+	pools		*pools
+	conn		net.Conn
+	ctx			context.Context
+	ctxCancel	context.CancelFunc
+	unavailable	atomicBool			//不可用
+}
+
+func (T *connMan) notifyYield(){
+	defer T.ctxCancel()
+	notify, ok := T.conn.(vconn.CloseNotifier)
+	if ok {
+		select {
+		case <-notify.CloseNotify():
+		case <-T.ctx.Done():
+		}
+	}else{
+		<-T.ctx.Done()
+	}
+	//有三种行为：
+	//1，用户取消
+	//2，空闲超时
+	//3，连接关闭
+	//
+	//可能：
+	//1
+	//设置 unavailable 为true，表示不可用状态。这样就不会在 get 中读取出来
+	//由于在多线程里面，要保证用户没有"正在" get 读取该连接
+	//2
+	//如果用户已经 get 读出，并设置 unavailable 为 true
+	//这里再次设置 unavailable 为 true，相同的值返回true
+	//!true 等于 false, 跳过
+	if !T.unavailable.setTrue() {
+		T.conn.Close()
+		//减少连接总数量
+       	atomic.AddInt32(&T.pools.cp.connNum, -1)
+	}
+	T.pools.yield(T.conn.LocalAddr())
+}
+
+type pools struct {
+	occupy			map[net.Addr]int	//占用的位置，LocalAddr
+	vacancy 		map[int]struct{}	//空缺的位置
+	conns			[]*connMan			//存放的列表
+	connsSize		int					//增长的位置
+	mu				sync.RWMutex
+	cp				*ConnPool
+	ctx				context.Context
+	ctxCancel		context.CancelFunc
+}
+func (T *pools) yield(addr net.Addr){
+	T.mu.Lock()
+	defer T.mu.Unlock()
+
+	pos := T.occupy[addr]
+	delete(T.occupy, addr)
+	
+	T.conns[pos]=nil
+	T.vacancy[pos]=struct{}{}
+}
+
+func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
+	T.mu.Lock()
+	defer T.mu.Unlock()
+	
+	//重复回收跳过
+	for {
+		if pos, ok := T.occupy[conn.LocalAddr()]; ok {
+			cm := T.conns[pos]
+			if cm.unavailable.isTrue() {
+				//连接不可用，等待让位中....
+				T.mu.Unlock()
+				T.mu.Lock()
+				continue
+			}
+			//连接已经存在
+			return nil
+		}
+		break
+	}
+	
+	cm := &connMan{
+		pools: T,
+		conn: conn,
+	}
+	
+	//上下文
+	if T.ctx == nil {
+		T.ctx, T.ctxCancel = context.WithCancel(context.Background())
+	}
+	if idleTImeout != 0 {
+		//负责处理空闲超时
+		cm.ctx, cm.ctxCancel = context.WithTimeout(T.ctx, idleTImeout)
+	}else{
+		//负责处理读出取消
+		cm.ctx, cm.ctxCancel = context.WithCancel(T.ctx)
+	}
+	
+	//在空缺位置安放
+	for pos, _ := range T.vacancy {
+		
+		delete(T.vacancy, pos)
+		
+		//超出最大连接
+		//pos 从 0 计数
+		//MaxConn 从 1 计数
+		if T.cp.IdeConn != 0 && pos >= T.cp.IdeConn {
+			continue
+		}
+		
+		T.conns[pos]=cm
+		T.occupy[conn.LocalAddr()]=pos
+		go cm.notifyYield()
+		return nil
+	}
+	
+	//池中的连接等于或超出最大限制连接
+	//pos 从 0 计数
+	//MaxConn 从 1 计数
+	if T.cp.IdeConn != 0 && T.connsSize >= T.cp.IdeConn {
+		return errorPoolFull
+	}
+	
+	//正常收回
+	T.conns = append(T.conns, cm)
+	T.occupy[conn.LocalAddr()] = T.connsSize
+	T.connsSize++
+	go cm.notifyYield()
+	return nil
+}
+func (T *pools) get() (conn net.Conn, err error) {
+	T.mu.RLock()
+	defer T.mu.RUnlock()
+	
+	for _, pos := range T.occupy {
+		connMan := T.conns[pos]
+		if connMan.unavailable.setTrue() {
+			//1，读取出来后设置该连接为不可用
+			//2，该连接已经失效
+			//
+			//调用上下文取消，notifyYield() 是在另一个线程里面。
+			//并没有及时调用 yield 方法从 occupy 里删除
+			//若在再次调用 get 读取，可能会读取到相同的连接。
+			continue
+		}
+		connMan.ctxCancel()
+		return connMan.conn, nil
+	}
+	return nil, errorConnNotAvailable
+}
+func (T *pools) length() int {
+	T.mu.RLock()
+	defer T.mu.RUnlock()
+	return len(T.occupy)
+} 
+func (T *pools) clear() {
+	if T.ctxCancel != nil {
+		T.ctxCancel()
+	}
+}
+
+type addr struct {
+	network, address string
+}
+func (T *addr) Network() string{
+	return T.network
+}
+func (T *addr) String() string {
+	return T.address
+}
+
+func ParseAddr(network, address string) net.Addr {
+	return &addr{network:network, address:address}
+}
+
+func parseKey(network, address string) string {
+	return network+","+address
+}
 
 //ConnPool 连接池
 type ConnPool struct {
     *net.Dialer                                                                             // 拨号
     IdeConn     int                                                                         // 空闲连接数，0为不复用连接
+    IdeTimeout	time.Duration																// 空闲自动超时
     MaxConn     int                                                                         // 最大连接数，0为无限制连接
     connNum     int32                                                                       // 当前连接数
-    conns       map[connAddr]chan net.Conn                                              	// 连接集
-    m           sync.Mutex                                                                  // 锁
+    conns       map[string]*pools                                              				// 连接集,RemoteAddr
+    m           sync.Mutex                                                                	// 锁
     closed      atomicBool                                                                  // 关闭池
     inited      atomicBool                                                                  // 初始化
+    pool		sync.Pool																	// 临时存在
 }
 
-func (cp *ConnPool) init(){
-    if cp.inited.isTrue() {
+func (T *ConnPool) init(){
+    if T.inited.setTrue() {
         return
     }
-    if cp.conns ==  nil {
-         cp.conns = make(map[connAddr]chan net.Conn)
+    if T.conns ==  nil {
+         T.conns = make(map[string]*pools)
     }
-    if cp.Dialer == nil {
-    	cp.Dialer = new(net.Dialer)
+    if T.Dialer == nil {
+    	T.Dialer = new(net.Dialer)
     }
-    cp.inited.setTrue()
 }
 
-
-func (cp *ConnPool) getConns(key connAddr) chan net.Conn {
-    cp.m.Lock()
-    defer cp.m.Unlock()
-    conns, ok := cp.conns[key]
+func (T *ConnPool) getPoolConn(network, address string) (conn net.Conn, err error) {
+    T.m.Lock()
+    defer T.m.Unlock()
+	T.init()
+	
+	key := parseKey(network, address)
+    ps, ok := T.conns[key]
     if !ok {
-        conns = make(chan net.Conn, cp.IdeConn)
-        cp.conns[key] = conns
+        return nil, errorConnNotAvailable
     }
-    return conns
+    conn, err = ps.get()
+    if err != nil {
+    	//池中没有空闲连接，删除该池
+    	delete(T.conns, key)
+    	T.pool.Put(ps)
+    }
+    return 
 }
 
-//Dial 拨号
+func (T *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
+    T.m.Lock()
+    defer T.m.Unlock()
+	T.init()
+	
+    if addr == nil {
+    	addr = conn.RemoteAddr()
+    }
+    key := parseKey(addr.Network(), addr.String())
+    
+    ps, ok := T.conns[key]
+    if !ok {
+    	if inf := T.pool.Get(); inf != nil {
+    		ps = inf.(*pools)
+    	}else{
+	    	ps = &pools{
+	    		cp: T,
+	    		occupy: make(map[net.Addr]int),
+	    		vacancy: make(map[int]struct{}),
+	    		conns: make([]*connMan, 0, T.IdeConn),
+	    	}
+    	}
+    	T.conns[key] = ps
+    }
+    return ps.put(conn, T.IdeTimeout)
+}
+
+func (T *ConnPool) getPoolConnCount(network, address string) int {
+    T.m.Lock()
+    defer T.m.Unlock()
+    
+    key := parseKey(network, address)
+    pools, ok := T.conns[key]
+    if !ok {
+        return 0
+    }
+    return pools.length()
+}
+
+func (T *ConnPool) clearPoolConn() {
+    T.m.Lock()
+    defer T.m.Unlock()
+	for key, pools := range T.conns {
+		pools.clear()
+    	delete(T.conns, key)
+    	T.pool.Put(pools)
+	}
+}
+
+//Dial 见 DialContext
 //	network string      连接类型
 //	address string      连接地址
 //	net.Conn            连接
 //	error               错误
-func (cp *ConnPool) Dial(network, address string) (net.Conn, error) {
-    return cp.DialContext(context.Background(), network, address)
+func (T *ConnPool) Dial(network, address string) (net.Conn, error) {
+    return T.DialContext(context.Background(), network, address)
 }
 
 //DialContext 拨号，如果ctx 携带键值是（priority=true）,是创建新连接，否则从池中读取。
+//注意：远程地址支持 host 或 ip，一个 host 会有多个 ip 地址，所以无法用 host 的 ip 做为存储地址。
+//DialContext 支持 hsot 和 ip 读取或创建连接。 而.Get 仅支持 ip 读取池中连接。
+//DialContext 创建的连接，调用 Close 关闭后，自动收回。
 //	ctx context.Context 上下文
 //	network string      连接类型
 //	address string      连接地址
 //	net.Conn            连接
 //	error               错误
-func (cp *ConnPool) DialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
-    if cp.closed.isTrue() {
+func (T *ConnPool) DialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
+    if T.closed.isTrue() {
         return nil, errorConnPoolClose
     }
-    cp.init()
-    var (
-    	pool 	bool
-	    key 	= connAddr{network, address}
-    )
+    
+    T.init()
+    
+    var pool bool
     priority, ok :=ctx.Value("priority").(bool)
     if ok && priority {
-    	conn, err = cp.dial(ctx, network, address)
+    	//新建拨号
+    	conn, err = T.dialCtx(ctx, network, address)
     }else{
-	    conn, pool, err = cp.getConn(ctx, key, true)
+    	//读取不存在，新建拨号
+	    conn, pool, err = T.getConn(ctx, network, address)
     }
     if err != nil {
         return nil, err
     }
-    return &connSingle{Conn:conn, cp:cp, key:key, isPool: pool}, nil
+    
+    addr := ParseAddr(network, address)
+    return &connSingle{Conn:conn, cp:T, isPool: pool, addr: addr}, nil
 }
 
-
-func (cp *ConnPool) dial(ctx context.Context, network, address string) (conn net.Conn, err error) {
-    if cp.MaxConn != 0 &&  int(atomic.LoadInt32(&cp.connNum)) >= cp.MaxConn {
+func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn net.Conn, err error) {
+    if T.MaxConn != 0 &&  int(atomic.LoadInt32(&T.connNum)) >= T.MaxConn {
         return nil, errorConnPoolMax
     }
     
-    conn, err = cp.Dialer.DialContext(ctx, network, address)
+    conn, err = T.Dialer.DialContext(ctx, network, address)
     if err != nil {
         return
     }
     
-    if int(atomic.AddInt32(&cp.connNum, 1)) > cp.MaxConn && cp.MaxConn != 0 {
-    	atomic.AddInt32(&cp.connNum, -1)
+    //支持多线程拨号，防止网络阻塞，无法继续创建
+    //再次判断连接数是否已经超出
+    if int(atomic.AddInt32(&T.connNum, 1)) > T.MaxConn && T.MaxConn != 0 {
+   		atomic.AddInt32(&T.connNum, -1)
     	conn.Close()
         return nil, errorConnPoolMax
     }
@@ -232,173 +499,78 @@ func (cp *ConnPool) dial(ctx context.Context, network, address string) (conn net
 	return vconn.NewConn(conn), nil
 }
 
-func (cp *ConnPool) getConn(ctx context.Context, key connAddr, dial bool) (conn net.Conn, pool bool, err error) {
-    //读取的时要注意 host 或 ip，如果你使用 .Dialer 访问并回收连接，之后使用 .Get 读取连接。
-    //要注意了，.Dialer 是以 hostname 作为 key 存储，而 .Get 读取是以 IP，所以可能、可能、可能会读不出接连。
-    G1:
-	select {
-    case conn = <- cp.getConns(key):
-        pool = true
-        notifier, ok := conn.(vconn.CloseNotifier)
-    	if ok {
-    		select {
-    		case <-notifier.CloseNotify():
-       			atomic.AddInt32(&cp.connNum, -1)
-    			goto G1
-    		default:
-    		}
-    	}
-    default:
-        if !dial {
-            //dial设置了不需创建新连接
-            err = fmt.Errorf("vconnpool: 读取 %v，没有空闲的连接可以读取。", key)
-            return
-        }
-       	conn, err = cp.dial(ctx, key.network, key.address)
-        pool = false
-    }
-    return
+func (T *ConnPool) getConn(ctx context.Context, network, address string) (conn net.Conn, pool bool, err error) {
+	conn, err = T.getPoolConn(network, address)
+	if err != nil {
+		conn, err = T.dialCtx(ctx, network, address)
+	}
+	pool = true
+	return
 }
 
-//Get 从池中读取一条连接。
-//读取出来的连接不会自动回收，如果你.Close() 是真的关闭连接，不是回收。
-//需要在不关闭连接的状态下，需要调用 .Add(...) 收入
-//而.Dial(...) 读取出来的连接，调用.Close() 之后，是自动收回的。.Get(...) 不是。
-//	addr net.Addr   地址
-//	conn net.Conn   连接
+//Get 从池中读取一条连接。读取出来的连接不会自动回收，如果你.Close() 是真的关闭连接，不是回收。
+//	addr net.Addr   地址，为远程地址RemoteAddr
 //	error           错误
-func (cp *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
-	if cp.closed.isTrue() {
+func (T *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
+	if T.closed.isTrue() {
 	    return nil, errorConnPoolClose
 	}
-    
-	cp.init()
-	key := connAddr{addr.Network(), addr.String()}
-	conn, _, err = cp.getConn(context.Background(), key, false)
+	
+	conn, err = T.getPoolConn(addr.Network(), addr.String())
 	if err == nil {
-		atomic.AddInt32(&cp.connNum, -1)
+		atomic.AddInt32(&T.connNum, -1)
 	}
 	return
 }
 
 //Add 增加一个连接到池中
-//	addr net.Addr   存储位置Key名称
 //	conn net.Conn   连接
 //	error           错误
-func (cp *ConnPool) Add(addr net.Addr, conn net.Conn) error {
-    if cp.closed.isTrue() {
-        //池被关闭了，由于是空闲连接，就关闭它。
-        conn.Close()
-        return errors.New("vconnpool: 连接池已经被关闭，当前连接也已经被关闭")
+func (T *ConnPool) Add(conn net.Conn) error {
+    if T.closed.isTrue() {
+        return errorConnPoolClose
+    }
+    
+    if T.MaxConn != 0 && int(atomic.LoadInt32(&T.connNum)) >= T.MaxConn {
+        return errorConnPoolMax
     }
     
     //如果是 *connSingle 类型则关闭，使用自动收回，不重复回收。
     if c, ok := conn.(*connSingle); ok {
     	return c.Close()
     }
-
-    if cp.MaxConn != 0 && int(atomic.LoadInt32(&cp.connNum)) >= cp.MaxConn {
-        conn.Close()
-        return errors.New("vconnpool: 连接池中的连接数量已经达到最大限制，当前连接也已经被关闭")
-    }
-   	atomic.AddInt32(&cp.connNum, 1)
-	
-    cp.init()
-    key := connAddr{addr.Network(), addr.String()}
-    return cp.put(key, vconn.NewConn(conn))
-}
-
-//put 回收连接
-func (cp *ConnPool) put(key connAddr, conn net.Conn) error {
-    if cp.closed.isTrue() {
-        return conn.Close()
-     }
-
-    select {
-    case cp.getConns(key) <- conn:
-    default:
-       	atomic.AddInt32(&cp.connNum, -1)
-        return conn.Close()
-    }
+    
+    atomic.AddInt32(&T.connNum, 1)
+	err := T.putPoolConn(conn, nil)
+	if err != nil {
+		atomic.AddInt32(&T.connNum, -1)
+		return err
+	}
 	return nil
 }
 
+
 //ConnNum 当前可用连接数量
 //	int     数量
-func (cp *ConnPool) ConnNum() int {
-    return int(atomic.LoadInt32(&cp.connNum))
-}
-
-//ConnNumIde    当前空闲连接数量
-//	int     数量
-func (cp *ConnPool) ConnNumIde(network, address string) int {
-    if cp.closed.isTrue() {
+func (T *ConnPool) ConnNum() int {
+    if T.closed.isTrue() {
         return 0
     }
-    cp.init()
-    key := connAddr{network, address}
-    conns := cp.getConns(key)
-    return len(conns)
+   return int(atomic.LoadInt32(&T.connNum))
+}
+
+//ConnNumIde 当前空闲连接数量。这不是实时的空闲连接数量，因为存在多线程。
+//	int     数量
+func (T *ConnPool) ConnNumIde(network, address string) int {
+    if T.closed.isTrue() {
+        return 0
+    }
+    return T.getPoolConnCount(network, address)
 }
 
 //CloseIdleConnections 关闭空闲连接池
-func (cp *ConnPool) CloseIdleConnections() {
-    cp.m.Lock()
-    defer cp.m.Unlock()
-    cp.init()
-     for k, conns := range cp.conns {
-        GO:for {
-         	select{
-                case conn := <- conns:
-                	atomic.AddInt32(&cp.connNum, -1)
-                    conn.Close()
-                default:
-                   if cp.closed.isTrue() {
-                        close(conns)
-                        delete(cp.conns, k)
-                    }
-                    break GO
-            }
-        }
-    }
-}
-
-//ClearInvalidConnection 关闭无效的连接，由于连接在池中时间过长，可能对方已经关闭连接，造成死连接，占用池中资源。
-func (cp *ConnPool) ClearInvalidConnection() {
-    cp.m.Lock()
-    defer cp.m.Unlock()
-    cp.init()
-    var closenum int32
-    for _, conns := range cp.conns {
-     	 
-     	 var tconns []net.Conn
-     	 
-     	//取出连接，判断是否有效
-        G1:for {
-         	select{
-            case conn := <- conns:
-        		select{
-        		case <-conn.(vconn.CloseNotifier).CloseNotify():
-        			closenum--
-        		default:
-        			tconns = append(tconns, conn)
-        		}
-            default:
-                break G1
-            }
-        }
-        
-        //重新装入连接
-        for _, conn := range tconns {
-        	select{
-        	case conns <- conn:
-        	default:
-        		closenum--
-        		conn.Close()
-        	}
-        }
-    }
-	atomic.AddInt32(&cp.connNum, closenum)
+func (T *ConnPool) CloseIdleConnections() {
+    T.clearPoolConn()
 }
 
 // Close 关闭连接池

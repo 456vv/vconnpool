@@ -4,268 +4,488 @@ import (
 	"testing"
     "time"
     "net"
+    "io"
+    "io/ioutil"
+    "github.com/456vv/vconn"
+    "bytes"
+   // "reflect"
     "context"
 )
 
+func server(t *testing.T, c chan net.Listener){
+    bl, err := net.Listen("tcp", "127.0.0.1:0")
+    fatal(t, err)
+    defer bl.Close()
+    c <- bl
+    for {
+	    conn, err := bl.Accept()
+	    if err != nil {
+	    	return
+	    }
+		go func(conn net.Conn){
+			defer conn.Close()
+			p := make([]byte, 1024)
+			exit := []byte("Close")
+			for {
+				n, err := conn.Read(p)
+				conn.Write(p[:n])
+				if err != nil || bytes.Contains(p[:n], exit) {
+					//t.Log("server", err)
+					return
+				}
+			}
+		}(conn)
+    }
+}
+
+func fatal(t *testing.T, err error){
+    if err != nil {
+    	t.Fatal(err)
+    }
+}
 
 func Test_ConnPool_1(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+	
     cp := &ConnPool{
         IdeConn:5,
         MaxConn:2,
     }
     defer cp.Close()
-    netConn1, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {
-    	t.Fatal(err)
-    }
+    
+    netConn1, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
+    
+    netConn2, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
 
-    netConn2, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {
-    	t.Fatal(err)
-    }
     netConn1.Close()
 
-    netConn3, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {
-    	t.Fatal(err)
-    }
+    netConn3, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
+    
+	if netConn1.LocalAddr() != netConn3.LocalAddr() {
+		t.Fatal("error")
+	}
+	
     netConn2.Close()
     netConn3.Close()
-
-    key := connAddr{"tcp", "news.baidu.com:80"}
-    l := len(cp.conns[key])
-    if l != 2 {
-        t.Fatalf("错误：无法加入空闲连接到池中，池中连接数量：%d", l)
+    
+    if d := cp.ConnNum(); d != 2 {
+    	t.Fatalf("error %d", d)
     }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
+    	t.Fatalf("error %d", d)
+    }
+    cp.CloseIdleConnections()
+    
+	time.Sleep(time.Second)
+	
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    cp.Close()
+	time.Sleep(time.Second)
 }
+
 func Test_ConnPool_2(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+
     cp := &ConnPool{
         Dialer:&net.Dialer{},
         IdeConn:5,
     }
     defer cp.Close()
-    netConn4, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {
-    	t.Fatal(err)
-    }
+    netConn4, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
+    
     netConn4.Close()
 
 }
 
 func Test_ConnPool_3(t *testing.T){
+	
+ 	addr := ParseAddr("tcp", "www.baidu.com:80")
+
     cp := &ConnPool{
         Dialer:&net.Dialer{},
         IdeConn:5,
     }
     defer cp.Close()
-    netConn1, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {
-    	t.Fatal(err)
-    }
-    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:news.baidu.com\r\nConnection:Close\r\n\r\n"))
-    p := make([]byte, 1024)
-    n, err := netConn1.Read(p)
-    if err != nil {
-        t.Fatal(err)
-    }
-    t.Log(n)
+    
+    netConn1, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
+    
+    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:Close\r\n\r\n"))
+    n64, err := io.Copy(ioutil.Discard, netConn1)
+    fatal(t, err)
+
+    t.Log(n64)
 
     netConn1.Close()
-
-    time.Sleep(time.Second)
-
-    netConn2, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {
-    	t.Fatal(err)
-    }
-    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:news.baidu.com\r\nConnection:Close\r\n\r\n"))
-    p = make([]byte, 1024)
-    n, err = netConn2.Read(p)
-    if err != nil {
-        t.Fatal(err)
-    }
-    t.Log(n)
+	
+	time.Sleep(time.Second)
+	
+    netConn2, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
+    
+    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:Close\r\n\r\n"))
+    n64, err = io.Copy(ioutil.Discard, netConn2)
+    fatal(t, err)
+    
+    t.Log(n64)
 
     netConn2.Close()
+    
+	time.Sleep(time.Second)
+    
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+
 
 }
 
 func Test_ConnPool_4(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+
     cp := &ConnPool{
         Dialer:&net.Dialer{},
         IdeConn:5,
     }
     defer cp.Close()
 
-    netConn1, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
-    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:news.baidu.com\r\nConnection:Close\r\n\r\n"))
-    p := make([]byte, 10240)
-    n, err := netConn1.Read(p)
-    if err != nil {t.Fatal(err)}
-    t.Log(n)
+    netConn1, err := cp.Dial(addr.Network(), addr.String())
+    fatal(t, err)
+    
+    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nUser-Agent: Mozilla/5.0\r\n\r\n"))
+    netConn1.SetReadDeadline(time.Now().Add(time.Second*2))
+    n64, err := io.Copy(ioutil.Discard, netConn1)
+    t.Log(n64)
+    if n64 == 0 {fatal(t, err)}
+	
     netConn1.Close()
-
     time.Sleep(time.Second)
-    if cp.ConnNum() != 1 {
-        t.Fatalf("netConn1:池里的连接数量不符，返回为：%d，预设为：1", cp.ConnNum())
+
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
     }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    
 
-    netConn2, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
-    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:news.baidu.com\r\nConnection:Close\r\n\r\n"))
-    p = make([]byte, 10240)
-    n, err = netConn2.Read(p)
-    if err != nil {t.Fatal(err)}
-    t.Log(n)
-    netConn2.Close()
-
+    netConn2, err := cp.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
+    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection: Close\r\n\r\n"))
+    netConn2.SetReadDeadline(time.Now().Add(time.Second*2))
+    n64, err = io.Copy(ioutil.Discard, netConn2)
+    t.Log(n64)
+    if n64 == 0 {fatal(t, err)}
+    
     time.Sleep(time.Second)
-    if cp.ConnNum() != 1 {
-        t.Fatalf("netConn2:池里的连接数量不符，返回为：%d，预设为：1", cp.ConnNum())
+    
+    netConn2_1 := netConn2.(Conn)
+    netConn2_2 := netConn2_1.RAWConn()
+    notify, ok := netConn2_2.(vconn.CloseNotifier)
+    if !ok {
+    	t.Fatal("error")
     }
+    select {
+    case err = <- notify.CloseNotify():
+    default:
+    }
+    if err != io.EOF {
+    	t.Fatal(err)
+    }
+    netConn2_2.Close()
+    
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+	
+	cp.Close()
+	time.Sleep(time.Second)
+}
 
-    netConn3, err := net.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
+func Test_ConnPool_5(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+
+    cp := &ConnPool{
+        Dialer:&net.Dialer{},
+        IdeConn:5,
+    }
+    defer cp.Close()
+
+    netConn3, err := net.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
     defer netConn3.Close()
-    err = cp.Add(netConn3.RemoteAddr(), netConn3)
-    if err != nil {t.Fatal(err)}
-    if cp.ConnNum() != 2 {
-        t.Fatalf("netConn3:池里的‘可用’连接数量不符，返回为：%d，预设为：2", cp.ConnNum())
-    }
+    err = cp.Add(netConn3)
+   	fatal(t, err)
+    
+	time.Sleep(time.Second)
 
-    netConn4, err := net.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+	
+	time.Sleep(time.Second)
+
+    netConn4, err := net.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
     defer netConn4.Close()
-    err = cp.Add(netConn4.RemoteAddr(), netConn4)
-    if err != nil {t.Fatal(err)}
-    if cp.ConnNum() != 3 {
-        t.Fatalf("netConn4:池里的连接数量不符，返回为：%d，预设为：3", cp.ConnNum())
+    
+    err = cp.Add(netConn4)
+   	fatal(t, err)
+   	
+    if d := cp.ConnNum(); d != 2 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
+    	t.Fatalf("error %d", d)
+    }
+	
+	time.Sleep(time.Second)
+
+    tconn, err := cp.Get(netConn4.RemoteAddr())
+   	fatal(t, err)
+   	defer tconn.Close()
+   	
+	time.Sleep(time.Second)
+
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
+    	t.Fatalf("error %d", d)
     }
 
-    _, err = cp.Get(netConn3.RemoteAddr())
-    if err != nil {t.Fatal(err)}
-    if cp.ConnNum() != 2 {
-        t.Fatalf("Get:池里的连接数量不符，返回为：%d，预设为：2", cp.ConnNum())
+	time.Sleep(time.Second)
+
+    tconn, err = cp.Get(netConn4.RemoteAddr())
+   	fatal(t, err)
+   	defer tconn.Close()
+   	
+	time.Sleep(time.Second)
+
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
     }
 
-    _, err = cp.Get(netConn4.RemoteAddr())
-    if err != nil {t.Fatal(err)}
-    if cp.ConnNum() != 1 {
-        t.Fatalf("Get:池里的连接数量不符，返回为：%d，预设为：1", cp.ConnNum())
-    }
-
-    cp.Close()
+	time.Sleep(time.Second)
+	cp.Close()
     cp.Close()
     cp.CloseIdleConnections()
     cp.CloseIdleConnections()
     cp.Close()
     cp.CloseIdleConnections()
-    if cp.ConnNum() != 0 {
-        t.Fatalf("Get:池里的连接数量不符，返回为：%d，预设为：0", cp.ConnNum())
-    }
+	time.Sleep(time.Second)
 
 }
 
 
-func Test_ConnPool_5(t *testing.T){
+func Test_ConnPool_6(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+
     cp := &ConnPool{
         IdeConn:5,
         MaxConn:2,
     }
     defer cp.Close()
-    conn, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
+    
+    conn, err := cp.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
     conn.Close()
 
-    conn, err = cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
-    c, ok := conn.(Conn)
+    conn, err = cp.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
+   	
+    c1, ok := conn.(Conn)
     if !ok {
         t.Fatal("不支持转换为 Conn 接口")
     }
-    if cp.ConnNum() != 1 {
-        t.Fatalf("池里的连接数量不符，返回为：%d，预设为：1", cp.ConnNum())
-    }
-    c.Discard()
-    c.Close()
-    if cp.ConnNum() != 0 {
-        t.Fatalf("池里的连接数量不符，返回为：%d，预设为：0", cp.ConnNum())
-    }
-}
 
-func Test_ConnPool_6(t *testing.T){
-   cp := &ConnPool{
-        IdeConn:5,
-        MaxConn:2,
-    }
-    defer cp.Close()
-    conn, err := cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
-    conn.Close()
+	time.Sleep(time.Second)
 
-    conn, err = cp.Dial("tcp", "news.baidu.com:80")
-    if err != nil {t.Fatal(err)}
-    if cp.ConnNum() != 1 {
-        t.Fatalf("池里的连接数量不符，返回为：%d，预设为：1", cp.ConnNum())
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
     }
-    conn.Close()
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
 
-    ideCount := cp.ConnNumIde("tcp", "news.baidu.com:80")
-    if ideCount != cp.ConnNum() {
-        t.Fatalf("空闲连接和可用连接数量不符，空闲为：%d，可用为：%d", ideCount, cp.ConnNum())
+    c1.Discard()
+    c1.Close()
+
+	time.Sleep(time.Second)
+
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
     }
-    cp.Close()
-    //池被清空，空闲和实用连接都为0
-    ideCount = cp.ConnNumIde("tcp", "news.baidu.com:80")
-    if ideCount != 0 || cp.ConnNum() !=0 {
-        t.Fatalf("空闲连接和可用连接数量不符，空闲为：%d，可用为：%d", ideCount, cp.ConnNum())
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
     }
+
+	cp.Close()
+   	time.Sleep(time.Second)
 
 }
+
+
 
 func Test_ConnPool_7(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+
    cp := &ConnPool{
         IdeConn:5,
         MaxConn:2,
     }
     defer cp.Close()
-    conn, err := cp.Dial("tcp", "8.8.8.8:53")
-    if err != nil {t.Fatal(err)}
+    conn, err := cp.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
+    conn.Close()
+
+    conn, err = cp.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
+   	
+	time.Sleep(time.Second)
+
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+
+    conn.Close()
+    
+	time.Sleep(time.Second)
+
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+
+	cp.Close()
+   	time.Sleep(time.Second)
+
+}
+
+func Test_ConnPool_8(t *testing.T){
+	c := make(chan net.Listener, 1)
+	go server(t, c)
+	listen := <-c
+	defer listen.Close()
+	
+ 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+
+   cp := &ConnPool{
+        IdeConn:5,
+        MaxConn:2,
+    }
+    defer cp.Close()
+    conn, err := cp.Dial(addr.Network(), addr.String())
+   	fatal(t, err)
     conn.Close()
     
     ctx := context.WithValue(context.Background(), "priority", true) //新创建连接
-    conn, err = cp.DialContext(ctx, "tcp", "8.8.8.8:53")
-    if err != nil {t.Fatal(err)}
-    addr := conn.RemoteAddr()
+    conn, err = cp.DialContext(ctx, addr.Network(), addr.String())
+   	fatal(t, err)
+    addr = conn.RemoteAddr()
     conn.Close()
     
     conn, err = cp.Get(addr)
-    if err != nil {t.Fatal(err)}
-    
-    err = cp.Add(conn.RemoteAddr(), conn)
-    if err != nil {t.Fatal(err)}
-    
-    connNumIde := cp.ConnNumIde(addr.Network(), addr.String())
-    if connNumIde != 2 {
-        t.Fatalf("空闲连接数量不符，预设：%d，真实是：%d", 2, connNumIde)
-    }
-    conn.Close()
-    
-    cp.ClearInvalidConnection()
-    connNumIde = cp.ConnNumIde(addr.Network(), addr.String())
-    if connNumIde != 1 {
-        t.Fatalf("空闲连接数量不符，预设：%d，真实是：%d", 1, connNumIde)
+   	fatal(t, err)
+   	defer conn.Close()
+
+    err = cp.Add(conn)
+   	fatal(t, err)
+
+	time.Sleep(time.Second)
+
+    if d := cp.ConnNum(); d != 2 {
+    	t.Fatalf("error %d", d)
     }
     
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
+    	t.Fatalf("error %d", d)
+    }
+ 
+   	time.Sleep(time.Second)
+
+    cp.CloseIdleConnections()
     
+   	time.Sleep(time.Second)
+   	
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
     
-    
-    
-    
-    
-    
-    
-    
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+
+	cp.Close()
+   	time.Sleep(time.Second)
 
 }

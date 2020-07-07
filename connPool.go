@@ -39,7 +39,7 @@ type Conn interface{
 	net.Conn        	// 连接
 	Discard() error 	// 废弃（这条连接不再回收）
 	IsReuseConn() bool	// 判断这条连接是否是从池中读取出来的
-	RAWConn() net.Conn	// 原始连接，这个连接使用 Close 关闭后，不会回收
+	RawConn() net.Conn	// 原始连接，这个连接使用 Close 关闭后，不会回收
 }
 
 
@@ -148,7 +148,7 @@ func (T *connSingle) IsReuseConn() bool {
 	return T.isPool
 }
 
-func (T *connSingle) RAWConn() net.Conn {
+func (T *connSingle) RawConn() net.Conn {
 	if T.rawRead.setTrue() {
 		panic(errorConnRAWRead)
 	}

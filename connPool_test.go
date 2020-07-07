@@ -211,7 +211,7 @@ func Test_ConnPool_4(t *testing.T){
     time.Sleep(time.Second)
     
     netConn2_1 := netConn2.(Conn)
-    netConn2_2 := netConn2_1.RAWConn()
+    netConn2_2 := netConn2_1.RawConn()
     notify, ok := netConn2_2.(vconn.CloseNotifier)
     if !ok {
     	t.Fatal("error")

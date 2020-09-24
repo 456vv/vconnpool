@@ -160,6 +160,7 @@ func (T *connSingle) RawConn() net.Conn {
     conn := T.Conn
     T.Conn = nil
     T.cp = nil
+    T.addr = nil
 	return conn
 }
 

@@ -15,6 +15,7 @@ type Conn interface{                                                    // 连�
 }
 type ConnPool struct {                                                  // 连接池
     *net.Dialer                                                                 // 拨号
+    Host        func(oldAddress string) (newAddress string)                     // 拨号地址变更
     IdeConn     int                                                             // 空闲连接数，0为不复用连接
     MaxConn     int                                                             // 最大连接数，0为无限制连接
     IdeTimeout  time.Duration                                                   // 空闲自动超时，0为不超时

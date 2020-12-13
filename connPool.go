@@ -160,6 +160,7 @@ func (T *connSingle) RawConn() net.Conn {
     conn := T.Conn
     T.Conn = nil
     T.cp = nil
+    T.addr = nil
 	return conn
 }
 
@@ -341,10 +342,10 @@ func ParseAddr(network, address string) net.Addr {
 func parseKey(network, address string) string {
 	return network+","+address
 }
-
 //ConnPool 连接池
 type ConnPool struct {
     *net.Dialer                                                                             // 拨号
+	Host		func(oldAddress string) (newAddress string)									// 拨号地址变更
     IdeConn     int                                                                         // 空闲连接数，0为不复用连接
     IdeTimeout	time.Duration																// 空闲自动超时，0为不超时
     MaxConn     int                                                                         // 最大连接数，0为无限制连接
@@ -479,7 +480,9 @@ func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn n
     if T.MaxConn != 0 &&  int(atomic.LoadInt32(&T.connNum)) >= T.MaxConn {
         return nil, errorConnPoolMax
     }
-    
+	if T.Host != nil {
+		address = T.Host(address)
+	}
     conn, err = T.Dialer.DialContext(ctx, network, address)
     if err != nil {
         return

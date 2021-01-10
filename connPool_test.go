@@ -65,7 +65,7 @@ func Test_ConnPool_1(t *testing.T){
     fatal(t, err)
 
     netConn1.Close()
-
+    
     netConn3, err := cp.Dial(addr.Network(), addr.String())
     fatal(t, err)
     
@@ -80,14 +80,14 @@ func Test_ConnPool_1(t *testing.T){
     	t.Fatalf("error %d", d)
     }
     
+    time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
     	t.Fatalf("error %d", d)
     }
     cp.CloseIdleConnections()
-    
 	time.Sleep(time.Second)
-	
-    if d := cp.ConnNum(); d != 0 {
+
+	if d := cp.ConnNum(); d != 0 {
     	t.Fatalf("error %d", d)
     }
     
@@ -95,7 +95,6 @@ func Test_ConnPool_1(t *testing.T){
     	t.Fatalf("error %d", d)
     }
     cp.Close()
-	time.Sleep(time.Second)
 }
 
 func Test_ConnPool_2(t *testing.T){
@@ -115,6 +114,7 @@ func Test_ConnPool_2(t *testing.T){
     fatal(t, err)
     
     netConn4.Close()
+	time.Sleep(time.Second)
 
 }
 
@@ -131,20 +131,23 @@ func Test_ConnPool_3(t *testing.T){
     netConn1, err := cp.Dial(addr.Network(), addr.String())
     fatal(t, err)
     
-    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:Close\r\n\r\n"))
+    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:close\r\n\r\n"))
     n64, err := io.Copy(ioutil.Discard, netConn1)
     fatal(t, err)
 
     t.Log(n64)
-
+	
     netConn1.Close()
 	
 	time.Sleep(time.Second)
-	
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    
     netConn2, err := cp.Dial(addr.Network(), addr.String())
     fatal(t, err)
     
-    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:Close\r\n\r\n"))
+    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:close\r\n\r\n"))
     n64, err = io.Copy(ioutil.Discard, netConn2)
     fatal(t, err)
     
@@ -152,17 +155,14 @@ func Test_ConnPool_3(t *testing.T){
 
     netConn2.Close()
     
-	time.Sleep(time.Second)
-    
     if d := cp.ConnNum(); d != 0 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
     	t.Fatalf("error %d", d)
     }
-
-
 }
 
 func Test_ConnPool_4(t *testing.T){
@@ -189,7 +189,6 @@ func Test_ConnPool_4(t *testing.T){
     if n64 == 0 {fatal(t, err)}
 	
     netConn1.Close()
-    time.Sleep(time.Second)
 
     if d := cp.ConnNum(); d != 1 {
     	t.Fatalf("error %d", d)
@@ -209,7 +208,6 @@ func Test_ConnPool_4(t *testing.T){
     if n64 == 0 {fatal(t, err)}
     
     time.Sleep(time.Second)
-    
     netConn2_1 := netConn2.(Conn)
     netConn2_2 := netConn2_1.RawConn()
     notify, ok := netConn2_2.(vconn.CloseNotifier)
@@ -257,18 +255,16 @@ func Test_ConnPool_5(t *testing.T){
     err = cp.Add(netConn3)
    	fatal(t, err)
     
-	time.Sleep(time.Second)
 
     if d := cp.ConnNum(); d != 1 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
     	t.Fatalf("error %d", d)
     }
 	
-	time.Sleep(time.Second)
-
     netConn4, err := net.Dial(addr.Network(), addr.String())
    	fatal(t, err)
     defer netConn4.Close()
@@ -280,43 +276,38 @@ func Test_ConnPool_5(t *testing.T){
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
     	t.Fatalf("error %d", d)
     }
 	
-	time.Sleep(time.Second)
-
     tconn, err := cp.Get(netConn4.RemoteAddr())
    	fatal(t, err)
    	defer tconn.Close()
    	
-	time.Sleep(time.Second)
-
     if d := cp.ConnNum(); d != 1 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
     	t.Fatalf("error %d", d)
     }
-
-	time.Sleep(time.Second)
 
     tconn, err = cp.Get(netConn4.RemoteAddr())
    	fatal(t, err)
    	defer tconn.Close()
    	
-	time.Sleep(time.Second)
-
     if d := cp.ConnNum(); d != 0 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
     	t.Fatalf("error %d", d)
     }
 
-	time.Sleep(time.Second)
+
 	cp.Close()
     cp.Close()
     cp.CloseIdleConnections()
@@ -342,10 +333,19 @@ func Test_ConnPool_6(t *testing.T){
     }
     defer cp.Close()
     
+    //=====================================================
     conn, err := cp.Dial(addr.Network(), addr.String())
    	fatal(t, err)
     conn.Close()
-
+    
+    if d := cp.ConnNum(); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    time.Sleep(time.Second)
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
+    	t.Fatalf("error %d", d)
+    }
+    //=====================================================
     conn, err = cp.Dial(addr.Network(), addr.String())
    	fatal(t, err)
    	
@@ -353,33 +353,25 @@ func Test_ConnPool_6(t *testing.T){
     if !ok {
         t.Fatal("不支持转换为 Conn 接口")
     }
-
-	time.Sleep(time.Second)
-
     if d := cp.ConnNum(); d != 1 {
     	t.Fatalf("error %d", d)
     }
     
+    time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
     	t.Fatalf("error %d", d)
     }
-
+    //=====================================================
     c1.Discard()
     c1.Close()
-
-	time.Sleep(time.Second)
 
     if d := cp.ConnNum(); d != 0 {
     	t.Fatalf("error %d", d)
     }
-    
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
     	t.Fatalf("error %d", d)
     }
-
 	cp.Close()
-   	time.Sleep(time.Second)
-
 }
 
 
@@ -404,24 +396,22 @@ func Test_ConnPool_7(t *testing.T){
     conn, err = cp.Dial(addr.Network(), addr.String())
    	fatal(t, err)
    	
-	time.Sleep(time.Second)
-
     if d := cp.ConnNum(); d != 1 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
     	t.Fatalf("error %d", d)
     }
 
     conn.Close()
-    
-	time.Sleep(time.Second)
 
     if d := cp.ConnNum(); d != 1 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
     	t.Fatalf("error %d", d)
     }
@@ -460,21 +450,17 @@ func Test_ConnPool_8(t *testing.T){
 
     err = cp.Add(conn)
    	fatal(t, err)
-
-	time.Sleep(time.Second)
-
+   	
     if d := cp.ConnNum(); d != 2 {
     	t.Fatalf("error %d", d)
     }
     
+	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
     	t.Fatalf("error %d", d)
     }
  
-   	time.Sleep(time.Second)
-
     cp.CloseIdleConnections()
-    
    	time.Sleep(time.Second)
    	
     if d := cp.ConnNum(); d != 0 {

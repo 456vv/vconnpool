@@ -178,13 +178,12 @@ type connMan struct {
 	ctx			context.Context
 	ctxCancel	context.CancelFunc
 	unavailable	atomicBool			//不可用
+	readyed		chan struct{}
 }
 
 func (T *connMan) notifyYield(){
 	defer T.ctxCancel()
-	//设置这个连接可以被读取
-	//在多列程中，在调用 <-notify.CloseNotify() 是没有及时得到连接状态的。
-	T.unavailable.setFalse()
+	T.readyed <- struct{}{}
 	notify, ok := T.conn.(vconn.CloseNotifier)
 	if ok {
 		select {
@@ -220,7 +219,7 @@ type pools struct {
 	vacancy 		map[int]struct{}	//空缺的位置
 	conns			[]*connMan			//存放的列表
 	connsSize		int					//增长的位置
-	mu				sync.RWMutex
+	mu				sync.Mutex
 	cp				*ConnPool
 	ctx				context.Context
 	ctxCancel		context.CancelFunc
@@ -259,10 +258,8 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	cm := &connMan{
 		pools: T,
 		conn: conn,
+		readyed: make(chan struct{}, 0),
 	}
-	//在调用 go cm.notifyYield() 之前,防止被读取出来。
-	//因为无法保证这个连接是否可用。也可能在这个区间被关闭了。
-	cm.unavailable.setTrue()
 	
 	//上下文
 	if T.ctx == nil {
@@ -291,6 +288,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 		T.conns[pos]=cm
 		T.occupy[conn.LocalAddr()]=pos
 		go cm.notifyYield()
+		<-cm.readyed
 		return nil
 	}
 	
@@ -306,12 +304,12 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	T.occupy[conn.LocalAddr()] = T.connsSize
 	T.connsSize++
 	go cm.notifyYield()
+	<-cm.readyed
 	return nil
 }
 func (T *pools) get() (conn net.Conn, err error) {
-	T.mu.RLock()
-	defer T.mu.RUnlock()
-	
+	T.mu.Lock()
+	defer T.mu.Unlock()
 	for _, pos := range T.occupy {
 		connMan := T.conns[pos]
 		if connMan.unavailable.setTrue() {
@@ -329,10 +327,10 @@ func (T *pools) get() (conn net.Conn, err error) {
 	return nil, errorConnNotAvailable
 }
 func (T *pools) length() int {
-	T.mu.RLock()
-	defer T.mu.RUnlock()
+	T.mu.Lock()
+	defer T.mu.Unlock()
 	return len(T.occupy)
-} 
+}
 func (T *pools) clear() {
 	if T.ctxCancel != nil {
 		T.ctxCancel()
@@ -584,7 +582,8 @@ func (T *ConnPool) ConnNum() int {
    return int(atomic.LoadInt32(&T.connNum))
 }
 
-//ConnNumIde 当前空闲连接数量。这不是实时的空闲连接数量，因为存在多线程。
+//ConnNumIde 当前空闲连接数量。这不是实时的空闲连接数量。
+//入池后读取，得到真实数量。出池后读取，得到的不真实数量，因为存在多线程处理。
 //	int     数量
 func (T *ConnPool) ConnNumIde(network, address string) int {
     if T.closed.isTrue() {

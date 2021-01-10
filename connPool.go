@@ -4,14 +4,15 @@ import (
     "net"
     "errors"
     "sync"
+    "io"
     "time"
     "context"
     "sync/atomic"
     "github.com/456vv/vconn"
-    "syscall"
 )
 
 var (
+	errorConnClose 			= errors.New("vconnpool: The connection is closed")
 	errorConnPoolClose 		= errors.New("vconnpool: The connection pool has been closed")
 	errorConnPoolMax 		= errors.New("vconnpool: The number of connections in the connection pool has reached the maximum limit")
 	errorConnRAWRead 		= errors.New("vconnpool: The original connection cannot be read repeatedly")
@@ -59,7 +60,7 @@ type connSingle struct {
 //	err error   错误，超时或暂时性的错误
 func (T *connSingle) Write(b []byte) (n int, err error){
     if T.closed.isTrue() {
-        return 0, syscall.EINVAL
+        return 0, io.EOF
     }
     return T.Conn.Write(b)
 }
@@ -70,7 +71,7 @@ func (T *connSingle) Write(b []byte) (n int, err error){
 //	err error   错误，超时或暂时性的错误
 func (T *connSingle) Read(b []byte) (n int, err error){
     if T.closed.isTrue() {
-        return 0, syscall.EINVAL
+        return 0, io.EOF
     }
     return T.Conn.Read(b)
 }
@@ -82,7 +83,7 @@ func (T *connSingle) Close() error {
     	return nil
     }
     if T.closed.setTrue() {
-        return syscall.EINVAL
+        return errorConnClose
     }
     
     notifier, ok := T.Conn.(vconn.CloseNotifier)
@@ -115,7 +116,7 @@ func (T *connSingle) RemoteAddr() net.Addr{
 //SetDeadline 设置读写超时时间
 func (T *connSingle) SetDeadline(t time.Time) error{
     if T.closed.isTrue() {
-        return syscall.EINVAL
+        return errorConnClose
     }
     return T.Conn.SetDeadline(t)
 }
@@ -123,7 +124,7 @@ func (T *connSingle) SetDeadline(t time.Time) error{
 //SetReadDeadline 设置读取超时时间
 func (T *connSingle) SetReadDeadline(t time.Time) error{
     if T.closed.isTrue() {
-        return syscall.EINVAL
+        return errorConnClose
     }
     return T.Conn.SetReadDeadline(t)
 }
@@ -131,7 +132,7 @@ func (T *connSingle) SetReadDeadline(t time.Time) error{
 //SetWriteDeadline 设置写入超时时间
 func (T *connSingle) SetWriteDeadline(t time.Time) error{
     if T.closed.isTrue() {
-        return syscall.EINVAL
+        return errorConnClose
     }
    return T.Conn.SetWriteDeadline(t)
 }
@@ -152,7 +153,7 @@ func (T *connSingle) RawConn() net.Conn {
 		panic(errorConnRAWRead)
 	}
 	if T.closed.setTrue() {
-	    panic(syscall.EINVAL)
+	    panic(errorConnClose)
 	}
     
    	atomic.AddInt32(&T.cp.connNum, -1)
@@ -341,7 +342,6 @@ func ParseAddr(network, address string) net.Addr {
 func parseKey(network, address string) string {
 	return network+","+address
 }
-
 //ConnPool 连接池
 type ConnPool struct {
     *net.Dialer                                                                             // 拨号
@@ -503,7 +503,6 @@ func (T *ConnPool) getConn(ctx context.Context, network, address string) (conn n
 	conn, err = T.getPoolConn(network, address)
 	if err != nil {
 		conn, err = T.dialCtx(ctx, network, address)
-		return
 	}
 	pool = true
 	return

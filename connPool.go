@@ -62,7 +62,11 @@ func (T *connSingle) Write(b []byte) (n int, err error){
     if T.closed.isTrue() {
         return 0, io.EOF
     }
-    return T.Conn.Write(b)
+    n, err = T.Conn.Write(b)
+	if ne, ok := err.(net.Error); ok && !ne.Timeout() {
+		T.discard.setTrue()
+	}
+    return
 }
 
 //Read 读取
@@ -73,7 +77,11 @@ func (T *connSingle) Read(b []byte) (n int, err error){
     if T.closed.isTrue() {
         return 0, io.EOF
     }
-    return T.Conn.Read(b)
+    n, err = T.Conn.Read(b)
+	if ne, ok := err.(net.Error); ok && !ne.Timeout() {
+		T.discard.setTrue()
+	}
+    return 
 }
 
 //Close 关闭连接
@@ -170,10 +178,12 @@ type connMan struct {
 	ctx			context.Context
 	ctxCancel	context.CancelFunc
 	unavailable	atomicBool			//不可用
+	readyed		chan struct{}
 }
 
 func (T *connMan) notifyYield(){
 	defer T.ctxCancel()
+	T.readyed <- struct{}{}
 	notify, ok := T.conn.(vconn.CloseNotifier)
 	if ok {
 		select {
@@ -209,7 +219,7 @@ type pools struct {
 	vacancy 		map[int]struct{}	//空缺的位置
 	conns			[]*connMan			//存放的列表
 	connsSize		int					//增长的位置
-	mu				sync.RWMutex
+	mu				sync.Mutex
 	cp				*ConnPool
 	ctx				context.Context
 	ctxCancel		context.CancelFunc
@@ -248,6 +258,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	cm := &connMan{
 		pools: T,
 		conn: conn,
+		readyed: make(chan struct{}, 0),
 	}
 	
 	//上下文
@@ -277,6 +288,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 		T.conns[pos]=cm
 		T.occupy[conn.LocalAddr()]=pos
 		go cm.notifyYield()
+		<-cm.readyed
 		return nil
 	}
 	
@@ -292,12 +304,12 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	T.occupy[conn.LocalAddr()] = T.connsSize
 	T.connsSize++
 	go cm.notifyYield()
+	<-cm.readyed
 	return nil
 }
 func (T *pools) get() (conn net.Conn, err error) {
-	T.mu.RLock()
-	defer T.mu.RUnlock()
-	
+	T.mu.Lock()
+	defer T.mu.Unlock()
 	for _, pos := range T.occupy {
 		connMan := T.conns[pos]
 		if connMan.unavailable.setTrue() {
@@ -315,10 +327,10 @@ func (T *pools) get() (conn net.Conn, err error) {
 	return nil, errorConnNotAvailable
 }
 func (T *pools) length() int {
-	T.mu.RLock()
-	defer T.mu.RUnlock()
+	T.mu.Lock()
+	defer T.mu.Unlock()
 	return len(T.occupy)
-} 
+}
 func (T *pools) clear() {
 	if T.ctxCancel != nil {
 		T.ctxCancel()
@@ -503,6 +515,7 @@ func (T *ConnPool) getConn(ctx context.Context, network, address string) (conn n
 	conn, err = T.getPoolConn(network, address)
 	if err != nil {
 		conn, err = T.dialCtx(ctx, network, address)
+		return
 	}
 	pool = true
 	return
@@ -569,7 +582,8 @@ func (T *ConnPool) ConnNum() int {
    return int(atomic.LoadInt32(&T.connNum))
 }
 
-//ConnNumIde 当前空闲连接数量。这不是实时的空闲连接数量，因为存在多线程。
+//ConnNumIde 当前空闲连接数量。这不是实时的空闲连接数量。
+//入池后读取，得到真实数量。出池后读取，得到的不真实数量，因为存在多线程处理。
 //	int     数量
 func (T *ConnPool) ConnNumIde(network, address string) int {
     if T.closed.isTrue() {

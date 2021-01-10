@@ -62,7 +62,11 @@ func (T *connSingle) Write(b []byte) (n int, err error){
     if T.closed.isTrue() {
         return 0, io.EOF
     }
-    return T.Conn.Write(b)
+    n, err = T.Conn.Write(b)
+	if ne, ok := err.(net.Error); ok && !ne.Timeout() {
+		T.discard.setTrue()
+	}
+    return
 }
 
 //Read 读取
@@ -73,7 +77,11 @@ func (T *connSingle) Read(b []byte) (n int, err error){
     if T.closed.isTrue() {
         return 0, io.EOF
     }
-    return T.Conn.Read(b)
+    n, err = T.Conn.Read(b)
+	if ne, ok := err.(net.Error); ok && !ne.Timeout() {
+		T.discard.setTrue()
+	}
+    return 
 }
 
 //Close 关闭连接
@@ -174,6 +182,9 @@ type connMan struct {
 
 func (T *connMan) notifyYield(){
 	defer T.ctxCancel()
+	//设置这个连接可以被读取
+	//在多列程中，在调用 <-notify.CloseNotify() 是没有及时得到连接状态的。
+	T.unavailable.setFalse()
 	notify, ok := T.conn.(vconn.CloseNotifier)
 	if ok {
 		select {
@@ -249,6 +260,9 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 		pools: T,
 		conn: conn,
 	}
+	//在调用 go cm.notifyYield() 之前,防止被读取出来。
+	//因为无法保证这个连接是否可用。也可能在这个区间被关闭了。
+	cm.unavailable.setTrue()
 	
 	//上下文
 	if T.ctx == nil {

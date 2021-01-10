@@ -503,6 +503,7 @@ func (T *ConnPool) getConn(ctx context.Context, network, address string) (conn n
 	conn, err = T.getPoolConn(network, address)
 	if err != nil {
 		conn, err = T.dialCtx(ctx, network, address)
+		return
 	}
 	pool = true
 	return

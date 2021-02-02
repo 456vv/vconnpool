@@ -211,11 +211,11 @@ func (T *connMan) notifyYield(){
 		//减少连接总数量
        	atomic.AddInt32(&T.pools.cp.connNum, -1)
 	}
-	T.pools.yield(T.conn.LocalAddr())
+	T.pools.yield(T.conn)
 }
 
 type pools struct {
-	occupy			map[net.Addr]int	//占用的位置，LocalAddr
+	occupy			map[net.Conn]int	//占用的位置，LocalAddr
 	vacancy 		map[int]struct{}	//空缺的位置
 	conns			[]*connMan			//存放的列表
 	connsSize		int					//增长的位置
@@ -224,12 +224,13 @@ type pools struct {
 	ctx				context.Context
 	ctxCancel		context.CancelFunc
 }
-func (T *pools) yield(addr net.Addr){
+
+func (T *pools) yield(conn net.Conn){
 	T.mu.Lock()
 	defer T.mu.Unlock()
 
-	pos := T.occupy[addr]
-	delete(T.occupy, addr)
+	pos := T.occupy[conn]
+	delete(T.occupy, conn)
 	
 	T.conns[pos]=nil
 	T.vacancy[pos]=struct{}{}
@@ -241,7 +242,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	
 	//重复回收跳过
 	for {
-		if pos, ok := T.occupy[conn.LocalAddr()]; ok {
+		if pos, ok := T.occupy[conn]; ok {
 			cm := T.conns[pos]
 			if cm.unavailable.isTrue() {
 				//连接不可用，等待让位中....
@@ -286,7 +287,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 		}
 		
 		T.conns[pos]=cm
-		T.occupy[conn.LocalAddr()]=pos
+		T.occupy[conn]=pos
 		go cm.notifyYield()
 		<-cm.readyed
 		return nil
@@ -301,7 +302,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	
 	//正常收回
 	T.conns = append(T.conns, cm)
-	T.occupy[conn.LocalAddr()] = T.connsSize
+	T.occupy[conn] = T.connsSize
 	T.connsSize++
 	go cm.notifyYield()
 	<-cm.readyed
@@ -414,7 +415,7 @@ func (T *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
     	}else{
 	    	ps = &pools{
 	    		cp: T,
-	    		occupy: make(map[net.Addr]int),
+	    		occupy: make(map[net.Conn]int),
 	    		vacancy: make(map[int]struct{}),
 	    		conns: make([]*connMan, 0, T.IdeConn),
 	    	}

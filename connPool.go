@@ -19,6 +19,7 @@ var (
 	
 	errorConnNotAvailable 	= errors.New("No connections available in the pool")
 	errorPoolFull 			= errors.New("The number of idle connections has reached the maximum")
+	errIdleConnLimit		= errors.New("Idle connection limit")
 )
 
 type atomicBool int32
@@ -215,7 +216,7 @@ func (T *connMan) notifyYield(){
 }
 
 type pools struct {
-	occupy			map[net.Conn]int	//占用的位置，LocalAddr
+	occupy			map[net.Conn]int	//占用的位置
 	vacancy 		map[int]struct{}	//空缺的位置
 	conns			[]*connMan			//存放的列表
 	connsSize		int					//增长的位置
@@ -235,7 +236,6 @@ func (T *pools) yield(conn net.Conn){
 	T.conns[pos]=nil
 	T.vacancy[pos]=struct{}{}
 }
-
 func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	T.mu.Lock()
 	defer T.mu.Unlock()
@@ -279,9 +279,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 		
 		delete(T.vacancy, pos)
 		
-		//超出最大连接
-		//pos 从 0 计数
-		//MaxConn 从 1 计数
+		//超出最大的空闲连接
 		if T.cp.IdeConn != 0 && pos >= T.cp.IdeConn {
 			continue
 		}
@@ -294,8 +292,6 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 	}
 	
 	//池中的连接等于或超出最大限制连接
-	//pos 从 0 计数
-	//MaxConn 从 1 计数
 	if T.cp.IdeConn != 0 && T.connsSize >= T.cp.IdeConn {
 		return errorPoolFull
 	}
@@ -359,15 +355,15 @@ func parseKey(network, address string) string {
 type ConnPool struct {
     *net.Dialer                                                                             // 拨号
 	Host		func(oldAddress string) (newAddress string)									// 拨号地址变更
-    IdeConn     int                                                                         // 空闲连接数，0为不复用连接
+    IdeConn     int                                                                         // 空闲连接数，0为不支持连接入池
     IdeTimeout	time.Duration																// 空闲自动超时，0为不超时
     MaxConn     int                                                                         // 最大连接数，0为无限制连接
     connNum     int32                                                                       // 当前连接数
-    conns       map[string]*pools                                              				// 连接集,RemoteAddr
+    conns       map[string]*pools                                              				// 连接集
     m           sync.Mutex                                                                	// 锁
     closed      atomicBool                                                                  // 关闭池
     inited      atomicBool                                                                  // 初始化
-    pool		sync.Pool																	// 临时存在
+    pool		sync.Pool																	// 临时存在，存在空闲的池对象
 }
 
 func (T *ConnPool) init(){
@@ -402,9 +398,15 @@ func (T *ConnPool) getPoolConn(network, address string) (conn net.Conn, err erro
 }
 
 func (T *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
+	//空闲连接限制
+	if T.IdeConn == 0 {
+		return errIdleConnLimit
+	}
+	
     T.m.Lock()
     defer T.m.Unlock()
 	T.init()
+	
 	
     key := parseKey(addr.Network(), addr.String())
     
@@ -415,9 +417,9 @@ func (T *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
     	}else{
 	    	ps = &pools{
 	    		cp: T,
-	    		occupy: make(map[net.Conn]int),
-	    		vacancy: make(map[int]struct{}),
-	    		conns: make([]*connMan, 0, T.IdeConn),
+	    		occupy: make(map[net.Conn]int),			//占据位置
+	    		vacancy: make(map[int]struct{}),		//空缺位置
+	    		conns: make([]*connMan, 0, T.IdeConn),	//存在
 	    	}
     	}
     	T.conns[key] = ps
@@ -503,7 +505,7 @@ func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn n
     
     //支持多线程拨号，防止网络阻塞，无法继续创建
     //再次判断连接数是否已经超出
-    if int(atomic.AddInt32(&T.connNum, 1)) > T.MaxConn && T.MaxConn != 0 {
+    if int(atomic.AddInt32(&T.connNum, 1)) > T.MaxConn && T.MaxConn != 0 { //注意：判断位置不要交换
    		atomic.AddInt32(&T.connNum, -1)
     	conn.Close()
         return nil, errorConnPoolMax

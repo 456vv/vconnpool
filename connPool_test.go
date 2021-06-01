@@ -107,14 +107,21 @@ func Test_ConnPool_2(t *testing.T){
 
     cp := &ConnPool{
         Dialer:&net.Dialer{},
-        IdeConn:5,
+        IdeConn:0,
     }
     defer cp.Close()
     netConn4, err := cp.Dial(addr.Network(), addr.String())
     fatal(t, err)
     
     netConn4.Close()
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+
 	time.Sleep(time.Second)
+    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
 
 }
 
@@ -139,6 +146,10 @@ func Test_ConnPool_3(t *testing.T){
 	
     netConn1.Close()
 	
+    if d := cp.ConnNum(); d != 0 {
+    	t.Fatalf("error %d", d)
+    }
+    
 	time.Sleep(time.Second)
     if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
     	t.Fatalf("error %d", d)

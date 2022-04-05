@@ -1,488 +1,370 @@
 package vconnpool
 
 import (
+	"context"
+	"net"
 	"testing"
-    "time"
-    "net"
-    "io"
-    "io/ioutil"
-    "github.com/456vv/vconn"
-    "bytes"
-   // "reflect"
-    "context"
+	"time"
+
+	"github.com/456vv/vconn"
+	"github.com/456vv/x/tcptest"
+
+	//"github.com/alecthomas/assert"
+	"github.com/issue9/assert/v2"
 )
 
-func server(t *testing.T, c chan net.Listener){
-    bl, err := net.Listen("tcp", "127.0.0.1:0")
-    fatal(t, err)
-    defer bl.Close()
-    c <- bl
-    for {
-	    conn, err := bl.Accept()
-	    if err != nil {
-	    	return
-	    }
-		go func(conn net.Conn){
-			defer conn.Close()
-			p := make([]byte, 1024)
-			exit := []byte("Close")
-			for {
-				n, err := conn.Read(p)
-				conn.Write(p[:n])
-				if err != nil || bytes.Contains(p[:n], exit) {
-					//t.Log("server", err)
-					return
-				}
-			}
-		}(conn)
-    }
+func Test_ConnPool_1(t *testing.T) {
+	as := assert.New(t, true)
+
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			IdeConn: 5,
+			MaxConn: 2,
+		}
+		defer cp.Close()
+
+		//创建连接
+		conn1, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn2, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+
+		conn1.Close()
+		conn2.Close()
+
+		d := cp.ConnNum()
+		as.Equal(d, 2)
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 2)
+
+		cp.CloseIdleConnections()
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNum()
+		as.Equal(d, 0)
+
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 0)
+	})
 }
 
-func fatal(t *testing.T, err error){
-    if err != nil {
-    	t.Fatal(err)
-    }
-}
+//检查池中的数量
+func Test_ConnPool_2(t *testing.T) {
+	as := assert.New(t, true)
 
-func Test_ConnPool_1(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
-	
-    cp := &ConnPool{
-        IdeConn:5,
-        MaxConn:2,
-    }
-    defer cp.Close()
-    
-    netConn1, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
-    
-    netConn2, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			Dialer:  &net.Dialer{},
+			IdeConn: 5,
+		}
+		defer cp.Close()
 
-    netConn1.Close()
-    
-    netConn3, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
-    
-	if netConn1.LocalAddr() != netConn3.LocalAddr() {
-		t.Fatal("error")
-	}
-	
-    netConn2.Close()
-    netConn3.Close()
-    
-    if d := cp.ConnNum(); d != 2 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
-    	t.Fatalf("error %d", d)
-    }
-    cp.CloseIdleConnections()
-	time.Sleep(time.Second)
+		//创建连接
+		conn, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn.Close()
 
-	if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    cp.Close()
-}
+		d := cp.ConnNum()
+		as.Equal(d, 1)
 
-func Test_ConnPool_2(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
-
-    cp := &ConnPool{
-        Dialer:&net.Dialer{},
-        IdeConn:0,
-    }
-    defer cp.Close()
-    netConn4, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
-    
-    netConn4.Close()
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 1)
+	})
 
 }
 
-func Test_ConnPool_3(t *testing.T){
-	
- 	addr := ParseAddr("tcp", "www.baidu.com:80")
+//读取原始连接，并关闭
+func Test_ConnPool_4(t *testing.T) {
+	as := assert.New(t, true)
 
-    cp := &ConnPool{
-        Dialer:&net.Dialer{},
-        IdeConn:5,
-    }
-    defer cp.Close()
-    
-    netConn1, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
-    
-    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:close\r\n\r\n"))
-    n64, err := io.Copy(ioutil.Discard, netConn1)
-    fatal(t, err)
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			Dialer:  &net.Dialer{},
+			IdeConn: 5,
+		}
+		defer cp.Close()
 
-    t.Log(n64)
-	
-    netConn1.Close()
-	
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    netConn2, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
-    
-    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection:close\r\n\r\n"))
-    n64, err = io.Copy(ioutil.Discard, netConn2)
-    fatal(t, err)
-    
-    t.Log(n64)
+		//创建连接
+		conn, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn.Close()
 
-    netConn2.Close()
-    
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
+		d := cp.ConnNum()
+		as.Equal(d, 1)
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 1)
+
+		//从池中读出
+		conn, err = cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+
+		//原始连接
+		netConn_2 := conn.(Conn).RawConn()
+		netConn_2.Close()
+
+		//没有用处，因为已经使用RawConn读取连接
+		conn.Close()
+
+		d = cp.ConnNum()
+		as.Equal(d, 0)
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 0)
+	})
 }
 
-func Test_ConnPool_4(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+//使用GET读取连接，池中的当前连接数量有变化
+func Test_ConnPool_5(t *testing.T) {
 
-    cp := &ConnPool{
-        Dialer:&net.Dialer{},
-        IdeConn:5,
-    }
-    defer cp.Close()
+	as := assert.New(t, true)
 
-    netConn1, err := cp.Dial(addr.Network(), addr.String())
-    fatal(t, err)
-    
-    netConn1.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nUser-Agent: Mozilla/5.0\r\n\r\n"))
-    netConn1.SetReadDeadline(time.Now().Add(time.Second*2))
-    n64, err := io.Copy(ioutil.Discard, netConn1)
-    t.Log(n64)
-    if n64 == 0 {fatal(t, err)}
-	
-    netConn1.Close()
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			Dialer:  &net.Dialer{},
+			IdeConn: 5,
+		}
+		defer cp.Close()
 
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
+		//创建连接
+		conn, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		defer conn.Close()
 
-    netConn2, err := cp.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-    netConn2.Write([]byte("GET / HTTP/1.1\r\nHost:www.baidu.com\r\nConnection: Close\r\n\r\n"))
-    netConn2.SetReadDeadline(time.Now().Add(time.Second*2))
-    n64, err = io.Copy(ioutil.Discard, netConn2)
-    t.Log(n64)
-    if n64 == 0 {fatal(t, err)}
-    
-    time.Sleep(time.Second)
-    netConn2_1 := netConn2.(Conn)
-    netConn2_2 := netConn2_1.RawConn()
-    notify, ok := netConn2_2.(vconn.CloseNotifier)
-    if !ok {
-    	t.Fatal("error")
-    }
-    select {
-    case err = <- notify.CloseNotify():
-    default:
-    }
-    if err != io.EOF {
-    	t.Fatal(err)
-    }
-    netConn2_2.Close()
-    
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-	
-	cp.Close()
-	time.Sleep(time.Second)
+		//加入池中
+		err = cp.Add(conn)
+		as.NotError(err)
+
+		d := cp.ConnNum()
+		as.Equal(d, 1)
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 1)
+
+		//从池中读取
+		tconn, err := cp.Get(conn.RemoteAddr())
+		as.NotError(err)
+		tconn.Close()
+
+		d = cp.ConnNum()
+		as.Equal(d, 0)
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 0)
+
+		cp.Close()
+		cp.Close()
+		cp.CloseIdleConnections()
+		cp.CloseIdleConnections()
+		cp.Close()
+	})
 }
 
-func Test_ConnPool_5(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+//废弃连接，不入池
+func Test_ConnPool_6(t *testing.T) {
 
-    cp := &ConnPool{
-        Dialer:&net.Dialer{},
-        IdeConn:5,
-    }
-    defer cp.Close()
+	as := assert.New(t, true)
 
-    netConn3, err := net.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-    defer netConn3.Close()
-    err = cp.Add(netConn3)
-   	fatal(t, err)
-    
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			IdeConn: 5,
+			MaxConn: 2,
+		}
+		defer cp.Close()
 
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-	
-    netConn4, err := net.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-    defer netConn4.Close()
-    
-    err = cp.Add(netConn4)
-   	fatal(t, err)
-   	
-    if d := cp.ConnNum(); d != 2 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
-    	t.Fatalf("error %d", d)
-    }
-	
-    tconn, err := cp.Get(netConn4.RemoteAddr())
-   	fatal(t, err)
-   	defer tconn.Close()
-   	
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
+		conn, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn.Close()
 
-    tconn, err = cp.Get(netConn4.RemoteAddr())
-   	fatal(t, err)
-   	defer tconn.Close()
-   	
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
+		conn, err = cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
 
+		c1, ok := conn.(Conn)
+		as.True(ok)
 
-	cp.Close()
-    cp.Close()
-    cp.CloseIdleConnections()
-    cp.CloseIdleConnections()
-    cp.Close()
-    cp.CloseIdleConnections()
-	time.Sleep(time.Second)
+		d := cp.ConnNum()
+		as.Equal(d, 1)
+
+		time.Sleep(time.Millisecond)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 0)
+
+		//废弃这个连接，不让他进入池内
+		c1.Discard()
+		c1.Close()
+
+		d = cp.ConnNum()
+		as.Equal(d, 0)
+	})
+}
+
+//检查连接数量和空闲数量
+func Test_ConnPool_7(t *testing.T) {
+	as := assert.New(t, true)
+
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			IdeConn: 5,
+			MaxConn: 2,
+		}
+		defer cp.Close()
+
+		conn, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn.Close()
+
+		conn, err = cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+
+		time.Sleep(5 * time.Millisecond)
+
+		//正在使用的连接数量
+		as.Equal(cp.ConnNum(), 1)
+
+		//池中的连接数量
+		d := cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 0)
+
+		conn.Close()
+
+		as.Equal(cp.ConnNum(), 1)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 1)
+	})
 
 }
 
+//判断连接池中的数量是否正确
+func Test_ConnPool_8(t *testing.T) {
+	as := assert.New(t, true)
 
-func Test_ConnPool_6(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
+		select {
+		case <-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify():
+			c.Close()
+		}
+	}, func(raddr net.Addr) {
+		cp := &ConnPool{
+			IdeConn: 5,
+			MaxConn: 2,
+		}
+		defer cp.Close()
 
-    cp := &ConnPool{
-        IdeConn:5,
-        MaxConn:2,
-    }
-    defer cp.Close()
-    
-    //=====================================================
-    conn, err := cp.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-    conn.Close()
-    
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    //=====================================================
-    conn, err = cp.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-   	
-    c1, ok := conn.(Conn)
-    if !ok {
-        t.Fatal("不支持转换为 Conn 接口")
-    }
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    //=====================================================
-    c1.Discard()
-    c1.Close()
+		conn, err := cp.Dial(raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn.Close()
 
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-	cp.Close()
+		ctx := context.WithValue(context.Background(), "priority", true) //新创建连接
+		conn, err = cp.DialContext(ctx, raddr.Network(), raddr.String())
+		as.NotError(err)
+		conn.Close()
+
+		as.Equal(cp.ConnNum(), 2)
+		d := cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 2)
+
+		cp.CloseIdleConnections()
+		time.Sleep(time.Second)
+
+		as.Equal(cp.ConnNum(), 0)
+		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		as.Equal(d, 0)
+	})
 }
 
+//已经关闭的连接禁止加入
+func Test_pools_1(t *testing.T) {
+	as := assert.New(t, true)
 
+	tcptest.C2S("127.0.0.1:0", func(c net.Conn) {
+		time.Sleep(time.Second)
+		c.Close()
+	}, func(c net.Conn) {
+		conn := vconn.NewConn(c)
+		ps := &pools{
+			cp: &ConnPool{
+				IdeConn: 10,
+			},
+			occupy:  make(map[net.Conn]int),  //占据位置
+			vacancy: make(map[int]struct{}),  //空缺位置
+			conns:   make([]*connMan, 0, 10), //存在
+		}
 
-func Test_ConnPool_7(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+		conn.Close()
+		ps.put(conn, 5*time.Second)
 
-   cp := &ConnPool{
-        IdeConn:5,
-        MaxConn:2,
-    }
-    defer cp.Close()
-    conn, err := cp.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-    conn.Close()
+		as.Equal(ps.length(), 0)
 
-    conn, err = cp.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-   	
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
+		conn1, err := ps.get()
+		as.ErrorIs(err, errorConnNotAvailable).Nil(conn1)
 
-    conn.Close()
-
-    if d := cp.ConnNum(); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 1 {
-    	t.Fatalf("error %d", d)
-    }
-
-	cp.Close()
-   	time.Sleep(time.Second)
-
+	})
 }
 
-func Test_ConnPool_8(t *testing.T){
-	c := make(chan net.Listener, 1)
-	go server(t, c)
-	listen := <-c
-	defer listen.Close()
-	
- 	addr := ParseAddr(listen.Addr().Network(), listen.Addr().String())
+//连接加入池之后，关闭连接
+func Test_pools_2(t *testing.T) {
+	as := assert.New(t, true)
 
-   cp := &ConnPool{
-        IdeConn:5,
-        MaxConn:2,
-    }
-    defer cp.Close()
-    conn, err := cp.Dial(addr.Network(), addr.String())
-   	fatal(t, err)
-    conn.Close()
-    
-    ctx := context.WithValue(context.Background(), "priority", true) //新创建连接
-    conn, err = cp.DialContext(ctx, addr.Network(), addr.String())
-   	fatal(t, err)
-    addr = conn.RemoteAddr()
-    conn.Close()
-    
-    conn, err = cp.Get(addr)
-   	fatal(t, err)
-   	defer conn.Close()
+	tcptest.C2S("127.0.0.1:0", func(c net.Conn) {
+		time.Sleep(time.Second)
+		c.Close()
+	}, func(c net.Conn) {
+		conn := vconn.NewConn(c)
+		ps := &pools{
+			cp: &ConnPool{
+				IdeConn: 10,
+			},
+			occupy:  make(map[net.Conn]int),  //占据位置
+			vacancy: make(map[int]struct{}),  //空缺位置
+			conns:   make([]*connMan, 0, 10), //存在
+		}
 
-    err = cp.Add(conn)
-   	fatal(t, err)
-   	
-    if d := cp.ConnNum(); d != 2 {
-    	t.Fatalf("error %d", d)
-    }
-    
-	time.Sleep(time.Second)
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 2 {
-    	t.Fatalf("error %d", d)
-    }
- 
-    cp.CloseIdleConnections()
-   	time.Sleep(time.Second)
-   	
-    if d := cp.ConnNum(); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
-    
-    if d := cp.ConnNumIde(addr.Network(), addr.String()); d != 0 {
-    	t.Fatalf("error %d", d)
-    }
+		ps.put(conn, 5*time.Second)
 
-	cp.Close()
-   	time.Sleep(time.Second)
+		conn.Close()
+		time.Sleep(10 * time.Millisecond)
 
+		as.Equal(ps.length(), 0)
+
+		conn1, err := ps.get()
+		as.ErrorIs(err, errorConnNotAvailable).Nil(conn1)
+
+	})
 }

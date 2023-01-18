@@ -15,12 +15,12 @@ import (
 var (
 	errorConnClose     = errors.New("vconnpool: the connection is closed")
 	errorConnPoolClose = errors.New("vconnpool: the connection pool has been closed")
-	errorConnPoolMax   = errors.New("vconnpool: the number of connections in the connection pool has reached the maximum limit")
+	ErrConnPoolMax     = errors.New("vconnpool: the number of connections in the connection pool has reached the maximum limit")
 	errorConnRAWRead   = errors.New("vconnpool: the original connection cannot be read repeatedly")
 
-	errorConnNotAvailable = errors.New("no connections available in the pool")
-	errorPoolFull         = errors.New("the number of idle connections has reached the maximum")
-	errIdleConnLimit      = errors.New("idle connection limit")
+	errIdleConnLimit    = errors.New("vconnpool: idle connection limit")
+	ErrConnNotAvailable = errors.New("vconnpool: no connections available in the pool")
+	ErrPoolFull         = errors.New("vconnpool: the number of idle connections has reached the maximum")
 )
 
 type atomicBool int32
@@ -104,8 +104,7 @@ func (T *connSingle) Close() error {
 		case <-notifier.CloseNotify():
 			// 连接已经关闭
 		default:
-			err := T.cp.putPoolConn(T.Conn, T.addr)
-			if err == nil {
+			if err := T.cp.putPoolConn(T.Conn, T.addr); err == nil {
 				// 回收成功
 				return nil
 			}
@@ -316,7 +315,7 @@ func (T *pools) put(conn net.Conn, idleTImeout time.Duration) error {
 
 	// 池中的连接等于或超出最大限制连接
 	if T.cp.IdeConn != 0 && T.connsSize >= T.cp.IdeConn {
-		return errorPoolFull
+		return ErrPoolFull
 	}
 
 	// 正常收回
@@ -345,7 +344,7 @@ func (T *pools) get() (conn net.Conn, err error) {
 		connMan.ctxCancel()
 		return connMan.conn, nil
 	}
-	return nil, errorConnNotAvailable
+	return nil, ErrConnNotAvailable
 }
 
 func (T *pools) length() int {
@@ -415,7 +414,7 @@ func (T *ConnPool) getPoolConn(network, address string) (conn net.Conn, err erro
 	key := parseKey(network, address)
 	ps, ok := T.conns[key]
 	if !ok {
-		return nil, errorConnNotAvailable
+		return nil, ErrConnNotAvailable
 	}
 	conn, err = ps.get()
 	if err != nil {
@@ -523,7 +522,7 @@ func (T *ConnPool) DialContext(ctx context.Context, network, address string) (co
 
 func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn net.Conn, err error) {
 	if T.MaxConn != 0 && int(atomic.LoadInt32(&T.connNum)) >= T.MaxConn {
-		return nil, errorConnPoolMax
+		return nil, ErrConnPoolMax
 	}
 	if T.Host != nil {
 		address = T.Host(address)
@@ -538,7 +537,7 @@ func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn n
 	if int(atomic.AddInt32(&T.connNum, 1)) > T.MaxConn && T.MaxConn != 0 { // 注意：判断位置不要交换
 		atomic.AddInt32(&T.connNum, -1)
 		conn.Close()
-		return nil, errorConnPoolMax
+		return nil, ErrConnPoolMax
 	}
 
 	return vconn.NewConn(conn), nil
@@ -591,7 +590,7 @@ func (T *ConnPool) Put(conn net.Conn, addr net.Addr) error {
 	}
 
 	if T.MaxConn != 0 && int(atomic.LoadInt32(&T.connNum)) >= T.MaxConn {
-		return errorConnPoolMax
+		return ErrConnPoolMax
 	}
 
 	// 如果是 *connSingle 类型则关闭，使用自动收回，不重复回收。

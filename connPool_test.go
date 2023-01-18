@@ -311,7 +311,7 @@ func Test_pools_1(t *testing.T) {
 		as.Equal(ps.length(), 0)
 
 		conn1, err := ps.get()
-		as.ErrorIs(err, errorConnNotAvailable).Nil(conn1)
+		as.ErrorIs(err, ErrConnNotAvailable).Nil(conn1)
 	})
 }
 
@@ -341,6 +341,6 @@ func Test_pools_2(t *testing.T) {
 		as.Equal(ps.length(), 0)
 
 		conn1, err := ps.get()
-		as.ErrorIs(err, errorConnNotAvailable).Nil(conn1)
+		as.ErrorIs(err, ErrConnNotAvailable).Nil(conn1)
 	})
 }

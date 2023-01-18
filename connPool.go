@@ -18,7 +18,6 @@ var (
 	ErrConnPoolMax     = errors.New("vconnpool: the number of connections in the connection pool has reached the maximum limit")
 	errorConnRAWRead   = errors.New("vconnpool: the original connection cannot be read repeatedly")
 
-	errIdleConnLimit    = errors.New("vconnpool: idle connection limit")
 	ErrConnNotAvailable = errors.New("vconnpool: no connections available in the pool")
 	ErrPoolFull         = errors.New("vconnpool: the number of idle connections has reached the maximum")
 )
@@ -428,7 +427,7 @@ func (T *ConnPool) getPoolConn(network, address string) (conn net.Conn, err erro
 func (T *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
 	// 空闲连接限制
 	if T.IdeConn == 0 {
-		return errIdleConnLimit
+		return ErrPoolFull
 	}
 
 	T.m.Lock()

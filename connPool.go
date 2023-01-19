@@ -3,6 +3,7 @@ package vconnpool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -171,6 +172,9 @@ func (T *connSingle) RawConn() net.Conn {
 	T.Conn = nil
 	T.cp = nil
 	T.addr = nil
+	if conn, ok := conn.(*vconn.Conn); ok {
+		return conn.RawConn()
+	}
 	return conn
 }
 
@@ -358,20 +362,18 @@ func (T *pools) clear() {
 	}
 }
 
-type addr struct {
-	network, address string
-}
-
-func (T *addr) Network() string {
-	return T.network
-}
-
-func (T *addr) String() string {
-	return T.address
-}
-
-func ParseAddr(network, address string) net.Addr {
-	return &addr{network: network, address: address}
+func ResolveAddr(network, address string) (net.Addr, error) {
+	switch network {
+	case "tcp":
+		return net.ResolveTCPAddr(network, address)
+	case "udp":
+		return net.ResolveUDPAddr(network, address)
+	case "ip":
+		return net.ResolveIPAddr(network, address)
+	case "unix":
+		return net.ResolveUnixAddr(network, address)
+	}
+	return nil, fmt.Errorf("the network type %s not support", network)
 }
 
 func parseKey(network, address string) string {
@@ -380,17 +382,17 @@ func parseKey(network, address string) string {
 
 // ConnPool 连接池
 type ConnPool struct {
-	Dialer                                                 // 拨号
-	Host       func(oldAddress string) (newAddress string) // 拨号地址变更
-	IdeConn    int                                         // 空闲连接数，0为不支持连接入池
-	IdeTimeout time.Duration                               // 空闲自动超时，0为不超时
-	MaxConn    int                                         // 最大连接数，0为无限制连接
-	connNum    int32                                       // 当前连接数
-	conns      map[string]*pools                           // 连接集
-	m          sync.Mutex                                  // 锁
-	closed     atomicBool                                  // 关闭池
-	inited     atomicBool                                  // 初始化
-	pool       sync.Pool                                   // 临时存在，存在空闲的池对象
+	Dialer                                                      // 拨号
+	ResolveAddr func(network, address string) (net.Addr, error) // 拨号地址变更
+	IdeConn     int                                             // 空闲连接数，0为不支持连接入池
+	IdeTimeout  time.Duration                                   // 空闲自动超时，0为不超时
+	MaxConn     int                                             // 最大连接数，0为无限制连接
+	connNum     int32                                           // 当前连接数
+	conns       map[string]*pools                               // 连接集
+	m           sync.Mutex                                      // 锁
+	closed      atomicBool                                      // 关闭池
+	inited      atomicBool                                      // 初始化
+	pool        sync.Pool                                       // 临时存在，存在空闲的池对象
 }
 
 func (T *ConnPool) init() {
@@ -435,7 +437,6 @@ func (T *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
 	T.init()
 
 	key := parseKey(addr.Network(), addr.String())
-
 	ps, ok := T.conns[key]
 	if !ok {
 		if inf := T.pool.Get(); inf != nil {
@@ -475,6 +476,13 @@ func (T *ConnPool) clearPoolConn() {
 	}
 }
 
+func (T *ConnPool) parseAddr(network, address string) (net.Addr, error) {
+	if T.ResolveAddr != nil {
+		return T.ResolveAddr(network, address)
+	}
+	return ResolveAddr(network, address)
+}
+
 // Dial 见 DialContext
 //
 //	network string      连接类型
@@ -500,22 +508,25 @@ func (T *ConnPool) DialContext(ctx context.Context, network, address string) (co
 		return nil, errorConnPoolClose
 	}
 
+	addr, err := T.parseAddr(network, address)
+	if err != nil {
+		return nil, err
+	}
+
 	T.init()
 
 	var pool bool
 	priority, ok := ctx.Value(PriorityContextKey).(bool)
 	if ok && priority {
 		// 新建拨号
-		conn, err = T.dialCtx(ctx, network, address)
+		conn, err = T.dialCtx(ctx, network, addr.String())
 	} else {
 		// 读取不存在，新建拨号
-		conn, pool, err = T.getConn(ctx, network, address)
+		conn, pool, err = T.getConn(ctx, network, addr.String())
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	addr := ParseAddr(network, address)
 	return &connSingle{Conn: conn, cp: T, isPool: pool, addr: addr}, nil
 }
 
@@ -523,9 +534,7 @@ func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn n
 	if T.MaxConn != 0 && int(atomic.LoadInt32(&T.connNum)) >= T.MaxConn {
 		return nil, ErrConnPoolMax
 	}
-	if T.Host != nil {
-		address = T.Host(address)
-	}
+
 	conn, err = T.Dialer.DialContext(ctx, network, address)
 	if err != nil {
 		return
@@ -539,16 +548,17 @@ func (T *ConnPool) dialCtx(ctx context.Context, network, address string) (conn n
 		return nil, ErrConnPoolMax
 	}
 
-	return vconn.NewConn(conn), nil
+	return vconn.New(conn), nil
 }
 
 func (T *ConnPool) getConn(ctx context.Context, network, address string) (conn net.Conn, pool bool, err error) {
-	conn, err = T.getPoolConn(network, address)
-	if err != nil {
-		conn, err = T.dialCtx(ctx, network, address)
-		return
+	if T.getPoolConnCount(network, address) > 0 {
+		if conn, err = T.getPoolConn(network, address); err == nil {
+			pool = true
+			return
+		}
 	}
-	pool = true
+	conn, err = T.dialCtx(ctx, network, address)
 	return
 }
 
@@ -562,10 +572,14 @@ func (T *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
 	}
 
 	conn, err = T.getPoolConn(addr.Network(), addr.String())
-	if err == nil {
-		atomic.AddInt32(&T.connNum, -1)
+	if err != nil {
+		return nil, err
 	}
-	return
+	atomic.AddInt32(&T.connNum, -1)
+	if conn, ok := conn.(*vconn.Conn); ok {
+		return conn.RawConn(), nil
+	}
+	return conn, nil
 }
 
 // Add 增加一个连接到池中，适用于 Dial 的连接。默认使用 RemoteAddr 作为 key 存放在池中。
@@ -598,8 +612,8 @@ func (T *ConnPool) Put(conn net.Conn, addr net.Addr) error {
 	}
 
 	atomic.AddInt32(&T.connNum, 1)
-	err := T.putPoolConn(conn, addr)
-	if err != nil {
+	conn = vconn.New(conn)
+	if err := T.putPoolConn(conn, addr); err != nil {
 		atomic.AddInt32(&T.connNum, -1)
 		return err
 	}

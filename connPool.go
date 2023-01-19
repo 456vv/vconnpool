@@ -638,7 +638,11 @@ func (T *ConnPool) ConnNumIde(network, address string) int {
 	if T.closed.isTrue() {
 		return 0
 	}
-	return T.getPoolConnCount(network, address)
+	addr, err := T.parseAddr(network, address)
+	if err != nil {
+		return 0
+	}
+	return T.getPoolConnCount(network, addr.String())
 }
 
 // CloseIdleConnections 关闭空闲连接池

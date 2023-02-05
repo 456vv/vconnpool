@@ -13,8 +13,8 @@ type Conn interface{                                                    // 连�
     IsReuseConn() bool                                                          // 判断这条连接是否是从池中读取出来的
     RawConn() net.Conn                                                          // 原始连接，这个连接使用 Close 关闭后，不会回收
 }
-type ConnPool struct {                                                  // 连接池
-    *net.Dialer                                                                 // 拨号
+type ConnPool struct {                                                          // 连接池
+    Dialer                                                                 // 拨号
     Host        func(oldAddress string) (newAddress string)                     // 拨号地址变更
     IdeConn     int                                                             // 空闲连接数，0为不复用连接
     MaxConn     int                                                             // 最大连接数，0为无限制连接

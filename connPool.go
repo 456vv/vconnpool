@@ -588,7 +588,7 @@ func (T *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
 //	conn net.Conn   连接
 //	error           错误
 func (T *ConnPool) Add(conn net.Conn) error {
-	return T.Put(vconn.New(conn), conn.RemoteAddr())
+	return T.Put(conn, conn.RemoteAddr())
 }
 
 // Put 增加一个连接到池中，适用于 Dial 和 listen 的连接。
@@ -612,7 +612,7 @@ func (T *ConnPool) Put(conn net.Conn, addr net.Addr) error {
 	}
 
 	atomic.AddInt32(&T.connNum, 1)
-	if err := T.putPoolConn(conn, addr); err != nil {
+	if err := T.putPoolConn(vconn.New(conn), addr); err != nil {
 		atomic.AddInt32(&T.connNum, -1)
 		return err
 	}

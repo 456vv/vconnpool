@@ -12,12 +12,13 @@ import (
 	"github.com/issue9/assert/v2"
 )
 
+// 判断池中空闲连接数量
 func Test_ConnPool_1(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
 		defer c.Close()
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
 			IdeConn: 5,
@@ -57,7 +58,7 @@ func Test_ConnPool_2(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
@@ -76,6 +77,9 @@ func Test_ConnPool_2(t *testing.T) {
 		time.Sleep(time.Millisecond)
 		d = cp.ConnNumIde(raddr.Network(), raddr.String())
 		as.Equal(d, 1)
+
+		d = cp.ConnNum()
+		as.Equal(d, 1)
 	})
 }
 
@@ -84,7 +88,7 @@ func Test_ConnPool_4(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
@@ -129,7 +133,7 @@ func Test_ConnPool_5(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
@@ -178,7 +182,7 @@ func Test_ConnPool_6(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
@@ -218,7 +222,7 @@ func Test_ConnPool_7(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
@@ -256,7 +260,7 @@ func Test_ConnPool_8(t *testing.T) {
 	as := assert.New(t, true)
 
 	tcptest.D2S("127.0.0.1:0", func(c net.Conn) {
-		<-vconn.NewConn(c).(vconn.CloseNotifier).CloseNotify()
+		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
 		cp := &ConnPool{
@@ -295,7 +299,7 @@ func Test_pools_1(t *testing.T) {
 		time.Sleep(time.Second)
 		c.Close()
 	}, func(c net.Conn) {
-		conn := vconn.NewConn(c)
+		conn := vconn.New(c)
 		ps := &pools{
 			cp: &ConnPool{
 				IdeConn: 10,
@@ -323,7 +327,7 @@ func Test_pools_2(t *testing.T) {
 		time.Sleep(time.Second)
 		c.Close()
 	}, func(c net.Conn) {
-		conn := vconn.NewConn(c)
+		conn := vconn.New(c)
 		ps := &pools{
 			cp: &ConnPool{
 				IdeConn: 10,

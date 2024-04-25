@@ -38,10 +38,11 @@ type Dialer interface {
 
 // Conn 连接接口，包含了 net.Conn
 type Conn interface {
-	net.Conn           // 连接
-	Discard() error    // 废弃（这条连接不再回收）
-	IsReuseConn() bool // 判断这条连接是否是从池中读取出来的
-	RawConn() net.Conn // 原始连接，这个连接使用 Close 关闭后，不会回收
+	net.Conn                            // 连接
+	Discard() error                     // 废弃（这条连接不再回收）
+	IsReuseConn() bool                  // 判断这条连接是否是从池中读取出来的
+	RawConn() net.Conn                  // 原始连接，这个连接使用 Close 关闭后，不会回收
+	RawConnFull([]byte) (net.Conn, int) // 原始连接，这个连接使用 Close 关闭后，不会回收
 }
 
 // connSingle 单连接
@@ -159,7 +160,7 @@ func (T *connSingle) IsReuseConn() bool {
 	return T.isPool
 }
 
-func (T *connSingle) RawConn() net.Conn {
+func (T *connSingle) rawConn() net.Conn {
 	if T.rawRead.setTrue() {
 		panic(errorConnRAWRead)
 	}
@@ -172,6 +173,24 @@ func (T *connSingle) RawConn() net.Conn {
 	T.Conn = nil
 	T.cp = nil
 	T.addr = nil
+
+	return conn
+}
+
+// 读出源始连接；如果是从池中读取出来，可能存在后台读取1位数据。这样你调用Read读取数据不完整，数据少一位。
+// p 将存放后台存取的数据，n 是后台数据长度。
+func (T *connSingle) RawConnFull(p []byte) (conn net.Conn, n int) {
+	conn = T.rawConn()
+	if conn, ok := conn.(*vconn.Conn); ok {
+		return conn.RawConnFull(p)
+	}
+	return conn, 0
+}
+
+// 读出源始连接；如果是从池中读取出来，可能存在后台读取1位数据。这样你调用Read读取数据不完整，数据少一位。
+// 建议使用RawConnFull，当然你可以调用 IsReuseConn 判断是不是池中连接。
+func (T *connSingle) RawConn() net.Conn {
+	conn := T.rawConn()
 	if conn, ok := conn.(*vconn.Conn); ok {
 		return conn.RawConn()
 	}
@@ -503,7 +522,7 @@ func (T *ConnPool) Dial(network, address string) (net.Conn, error) {
 //	address string      连接地址
 //	net.Conn            连接
 //	error               错误
-func (T *ConnPool) DialContext(ctx context.Context, network, address string) (conn net.Conn, err error) {
+func (T *ConnPool) DialContext(ctx context.Context, network, address string) (Conn, error) {
 	if T.closed.isTrue() {
 		return nil, errorConnPoolClose
 	}
@@ -515,9 +534,12 @@ func (T *ConnPool) DialContext(ctx context.Context, network, address string) (co
 
 	T.init()
 
-	var pool bool
-	priority, ok := ctx.Value(PriorityContextKey).(bool)
-	if ok && priority {
+	var (
+		conn net.Conn
+		pool bool
+	)
+
+	if priority, _ := ctx.Value(PriorityContextKey).(bool); priority {
 		// 新建拨号
 		conn, err = T.dialCtx(ctx, network, addr.String())
 	} else {
@@ -527,6 +549,7 @@ func (T *ConnPool) DialContext(ctx context.Context, network, address string) (co
 	if err != nil {
 		return nil, err
 	}
+
 	return &connSingle{Conn: conn, cp: T, isPool: pool, addr: addr}, nil
 }
 
@@ -563,8 +586,10 @@ func (T *ConnPool) getConn(ctx context.Context, network, address string) (conn n
 }
 
 // Get 从池中读取一条连接。读取出来的连接不会自动回收，如果你.Close() 是真的关闭连接，不是回收。
+// 注意：池中有可用连接数量，而无法读出连接。原因是连接存在后台数据，被判断为不完整。
 //
 //	addr net.Addr   地址，为远程地址RemoteAddr
+//	conn net.Conn	连接，源是 *vconn.Conn 类型
 //	error           错误
 func (T *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
 	if T.closed.isTrue() {
@@ -576,9 +601,6 @@ func (T *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
 		return nil, err
 	}
 	atomic.AddInt32(&T.connNum, -1)
-	if conn, ok := conn.(*vconn.Conn); ok {
-		return conn.RawConn(), nil
-	}
 	return conn, nil
 }
 

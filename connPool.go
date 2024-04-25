@@ -522,7 +522,7 @@ func (T *ConnPool) Dial(network, address string) (net.Conn, error) {
 //	address string      连接地址
 //	net.Conn            连接
 //	error               错误
-func (T *ConnPool) DialContext(ctx context.Context, network, address string) (Conn, error) {
+func (T *ConnPool) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if T.closed.isTrue() {
 		return nil, errorConnPoolClose
 	}

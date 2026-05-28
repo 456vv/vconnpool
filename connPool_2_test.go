@@ -39,7 +39,7 @@ func (m *mockDialer2) DialContext(ctx context.Context, network, address string) 
 
 // TestConnPool_Functional 测试连接池的核心功能：创建、复用、限制
 func TestConnPool_Functional(t *testing.T) {
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:     &mockDialer2{},
 		MaxConn:    5,
 		IdeConn:    2,
@@ -99,7 +99,7 @@ func TestConnPool_Functional(t *testing.T) {
 
 // TestConnPool_RawConn_Discard 测试原始连接获取和废弃逻辑
 func TestConnPool_RawConn_Discard(t *testing.T) {
-	pool := &ConnPool{Dialer: &mockDialer2{}}
+	pool := &Pool{Dialer: &mockDialer2{}}
 	defer pool.Close()
 
 	// 测试 Discard
@@ -134,7 +134,7 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 
 // TestConnPool_Priority 测试优先级 Dial
 func TestConnPool_Priority(t *testing.T) {
-	pool := &ConnPool{Dialer: &mockDialer2{}}
+	pool := &Pool{Dialer: &mockDialer2{}}
 	defer pool.Close()
 
 	c1, _ := pool.Dial("tcp", "127.0.0.1:0")
@@ -150,7 +150,7 @@ func TestConnPool_Priority(t *testing.T) {
 }
 
 func TestConnPool_Race_CrossCall(t *testing.T) {
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:     &mockDialer2{},
 		MaxConn:    50,
 		IdeConn:    10,
@@ -215,7 +215,7 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 
 // BenchmarkConnPool_DialAndClose 测试池化后的 Dial+Close 吞吐量
 func BenchmarkConnPool_DialAndClose(b *testing.B) {
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  &mockDialer2{},
 		MaxConn: 1000,
 		IdeConn: 500,
@@ -236,7 +236,7 @@ func BenchmarkConnPool_DialAndClose(b *testing.B) {
 
 // BenchmarkConnPool_DialNewConnection 测试不使用池（或池满）时的性能
 func BenchmarkConnPool_NoPool_Dial(b *testing.B) {
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  &mockDialer2{},
 		MaxConn: 0, // 无限制
 		IdeConn: 0, // 不缓存

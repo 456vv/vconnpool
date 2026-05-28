@@ -42,7 +42,7 @@ type Conn interface {
 type connSingle struct {
 	*vconn.Conn              // 嵌入包装连接
 	mu          sync.RWMutex // 仅保护 Conn 字段在 Close/RawConn 时的状态切换
-	cp          *ConnPool
+	cp          *Pool
 	addr        net.Addr
 	laddr       net.Addr
 	raddr       net.Addr
@@ -233,7 +233,7 @@ func (ic *idleConn) wait(timeout time.Duration) {
 }
 
 type pools struct {
-	cp      *ConnPool
+	cp      *Pool
 	mu      sync.Mutex
 	idle    []*idleConn
 	present map[net.Conn]struct{} // 用于 O(1) 查重
@@ -319,7 +319,7 @@ var defaultDialer = &net.Dialer{
 	KeepAlive: 30 * time.Second,
 }
 
-type ConnPool struct {
+type Pool struct {
 	Dialer      Dialer
 	ResolveAddr func(network, address string) (net.Addr, error)
 	IdeConn     int
@@ -331,7 +331,7 @@ type ConnPool struct {
 	closed  atomic.Bool
 }
 
-func (p *ConnPool) getPoolConn(network, address string) (net.Conn, error) {
+func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
 	key := network + "," + address
 	v, ok := p.conns.Load(key)
 	if !ok {
@@ -351,7 +351,7 @@ func (p *ConnPool) getPoolConn(network, address string) (net.Conn, error) {
 	return conn, err
 }
 
-func (p *ConnPool) getPoolConnCount(network, address string) int {
+func (p *Pool) getPoolConnCount(network, address string) int {
 	key := network + "," + address
 	v, ok := p.conns.Load(key)
 	if !ok {
@@ -365,7 +365,7 @@ func (p *ConnPool) getPoolConnCount(network, address string) int {
 	return count
 }
 
-func (p *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
+func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil conn or addr")
 	}
@@ -382,7 +382,7 @@ func (p *ConnPool) putPoolConn(conn net.Conn, addr net.Addr) error {
 	return ps.put(conn, p.IdeTimeout)
 }
 
-func (p *ConnPool) checkAndIncConnNum() error {
+func (p *Pool) checkAndIncConnNum() error {
 	if p.MaxConn <= 0 {
 		p.connNum.Add(1)
 		return nil
@@ -398,11 +398,11 @@ func (p *ConnPool) checkAndIncConnNum() error {
 	}
 }
 
-func (p *ConnPool) Dial(network, address string) (net.Conn, error) {
+func (p *Pool) Dial(network, address string) (net.Conn, error) {
 	return p.DialContext(context.Background(), network, address)
 }
 
-func (p *ConnPool) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+func (p *Pool) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if p.closed.Load() {
 		return nil, ErrConnPoolClose
 	}
@@ -441,7 +441,7 @@ func (p *ConnPool) DialContext(ctx context.Context, network, address string) (ne
 	}, nil
 }
 
-func (p *ConnPool) dialNew(ctx context.Context, network, address string) (net.Conn, error) {
+func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, error) {
 	// 1. 检查并预占配额
 	if err := p.checkAndIncConnNum(); err != nil {
 		return nil, err
@@ -477,7 +477,7 @@ func (p *ConnPool) dialNew(ctx context.Context, network, address string) (net.Co
 }
 
 // Get 从连接池获取指定地址的连接（不创建新连接）
-func (p *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
+func (p *Pool) Get(addr net.Addr) (conn net.Conn, err error) {
 	if p.closed.Load() {
 		return nil, ErrConnPoolClose
 	}
@@ -495,14 +495,14 @@ func (p *ConnPool) Get(addr net.Addr) (conn net.Conn, err error) {
 	return conn, nil
 }
 
-func (p *ConnPool) Add(conn net.Conn) error {
+func (p *Pool) Add(conn net.Conn) error {
 	if conn == nil {
 		return errors.New("vconnpool: cannot add nil connection")
 	}
 	return p.Put(conn, conn.RemoteAddr())
 }
 
-func (p *ConnPool) Put(conn net.Conn, addr net.Addr) error {
+func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 	if p.closed.Load() {
 		return ErrConnPoolClose
 	}
@@ -533,7 +533,7 @@ func (p *ConnPool) Put(conn net.Conn, addr net.Addr) error {
 }
 
 // CloseIdleConnections 关闭空闲连接池
-func (p *ConnPool) CloseIdleConnections() {
+func (p *Pool) CloseIdleConnections() {
 	p.conns.Range(func(key, value interface{}) bool {
 		ps := value.(*pools)
 		ps.mu.Lock()
@@ -550,7 +550,7 @@ func (p *ConnPool) CloseIdleConnections() {
 	})
 }
 
-func (p *ConnPool) Close() error {
+func (p *Pool) Close() error {
 	if p.closed.Swap(true) {
 		return nil
 	}
@@ -560,12 +560,12 @@ func (p *ConnPool) Close() error {
 	return nil
 }
 
-func (p *ConnPool) ConnNum() int {
+func (p *Pool) ConnNum() int {
 	return int(p.connNum.Load())
 }
 
 // ConnNumIde 当前空闲连接数量
-func (p *ConnPool) ConnNumIde(network, address string) int {
+func (p *Pool) ConnNumIde(network, address string) int {
 	if p.closed.Load() {
 		return 0
 	}

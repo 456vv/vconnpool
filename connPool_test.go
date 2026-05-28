@@ -25,7 +25,7 @@ func Test_ConnPool_1(t *testing.T) {
 		defer c.Close()
 		<-vconn.New(c).CloseNotify()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 			MaxConn: 2,
 		}
@@ -67,7 +67,7 @@ func Test_ConnPool_2(t *testing.T) {
 		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 		}
 		defer cp.Close()
@@ -97,7 +97,7 @@ func Test_ConnPool_4(t *testing.T) {
 		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 		}
 		defer cp.Close()
@@ -144,7 +144,7 @@ func Test_ConnPool_5(t *testing.T) {
 		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 		}
 		defer cp.Close()
@@ -193,7 +193,7 @@ func Test_ConnPool_6(t *testing.T) {
 		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 			MaxConn: 2,
 		}
@@ -233,7 +233,7 @@ func Test_ConnPool_7(t *testing.T) {
 		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 			MaxConn: 2,
 		}
@@ -293,7 +293,7 @@ func Test_ConnPool_8(t *testing.T) {
 		<-vconn.New(c).CloseNotify()
 		c.Close()
 	}, func(raddr net.Addr) {
-		cp := &ConnPool{
+		cp := &Pool{
 			IdeConn: 5,
 			MaxConn: 2,
 		}
@@ -506,7 +506,7 @@ func TestConnSingle_BasicOperations(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cp := &ConnPool{}
+			cp := &Pool{}
 			mockConn1 := newMockConn1(
 				&Addr{Net: "tcp", Name: "127.0.0.1:8080"},
 				&Addr{Net: "tcp", Name: "127.0.0.1:9090"},
@@ -578,7 +578,7 @@ func TestConnSingle_ErrorHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cp := &ConnPool{}
+			cp := &Pool{}
 			mockConn1 := newMockConn1(
 				&Addr{Net: "tcp", Name: "127.0.0.1:8080"},
 				&Addr{Net: "tcp", Name: "127.0.0.1:9090"},
@@ -609,7 +609,7 @@ func TestConnSingle_ErrorHandling(t *testing.T) {
 
 // TestConnSingle_Discard 测试连接废弃功能
 func TestConnSingle_Discard(t *testing.T) {
-	cp := &ConnPool{}
+	cp := &Pool{}
 	cp.connNum.Store(1)
 
 	mockConn1 := newMockConn1(
@@ -652,7 +652,7 @@ func TestConnSingle_Discard(t *testing.T) {
 
 // TestConnSingle_RawConn 测试获取原始连接
 func TestConnSingle_RawConn(t *testing.T) {
-	cp := &ConnPool{}
+	cp := &Pool{}
 	cp.connNum.Store(1)
 
 	mockConn1 := newMockConn1(
@@ -695,11 +695,11 @@ func TestConnSingle_RawConn(t *testing.T) {
 func TestConnPool_BasicOperations(t *testing.T) {
 	tests := []struct {
 		name string
-		fn   func(t *testing.T, cp *ConnPool)
+		fn   func(t *testing.T, cp *Pool)
 	}{
 		{
 			name: "Dial创建连接",
-			fn: func(t *testing.T, cp *ConnPool) {
+			fn: func(t *testing.T, cp *Pool) {
 				conn, err := cp.Dial("tcp", "127.0.0.1:8080")
 				if err != nil {
 					t.Fatalf("Dial failed: %v", err)
@@ -713,7 +713,7 @@ func TestConnPool_BasicOperations(t *testing.T) {
 		},
 		{
 			name: "DialContext创建连接",
-			fn: func(t *testing.T, cp *ConnPool) {
+			fn: func(t *testing.T, cp *Pool) {
 				ctx := context.Background()
 				conn, err := cp.DialContext(ctx, "tcp", "127.0.0.1:8080")
 				if err != nil {
@@ -728,7 +728,7 @@ func TestConnPool_BasicOperations(t *testing.T) {
 		},
 		{
 			name: "连接复用",
-			fn: func(t *testing.T, cp *ConnPool) {
+			fn: func(t *testing.T, cp *Pool) {
 				// 创建第一个连接
 				conn1, err := cp.Dial("tcp", "127.0.0.1:8080")
 				if err != nil {
@@ -755,7 +755,7 @@ func TestConnPool_BasicOperations(t *testing.T) {
 		},
 		{
 			name: "ConnNum统计",
-			fn: func(t *testing.T, cp *ConnPool) {
+			fn: func(t *testing.T, cp *Pool) {
 				initialCount := cp.ConnNum()
 
 				conn, err := cp.Dial("tcp", "127.0.0.1:8080")
@@ -775,7 +775,7 @@ func TestConnPool_BasicOperations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dialer := &mockDialer{}
-			cp := &ConnPool{
+			cp := &Pool{
 				Dialer: dialer,
 			}
 			defer cp.Close()
@@ -789,7 +789,7 @@ func TestConnPool_BasicOperations(t *testing.T) {
 func TestConnPool_MaxConnLimit(t *testing.T) {
 	maxConn := 5
 	dialer := &mockDialer{}
-	cp := &ConnPool{
+	cp := &Pool{
 		Dialer:  dialer,
 		MaxConn: maxConn,
 	}
@@ -834,7 +834,7 @@ func TestConnPool_MaxConnLimit(t *testing.T) {
 func TestConnPool_IdleConnLimit(t *testing.T) {
 	ideConn := 3
 	dialer := &mockDialer{}
-	cp := &ConnPool{
+	cp := &Pool{
 		Dialer:  dialer,
 		IdeConn: ideConn,
 	}
@@ -862,7 +862,7 @@ func TestConnPool_IdleConnLimit(t *testing.T) {
 func TestConnPool_IdleTimeout(t *testing.T) {
 	timeout := 100 * time.Millisecond
 	dialer := &mockDialer{}
-	cp := &ConnPool{
+	cp := &Pool{
 		Dialer:     dialer,
 		IdeTimeout: timeout,
 	}
@@ -894,7 +894,7 @@ func TestConnPool_IdleTimeout(t *testing.T) {
 // TestConnPool_PriorityContext 测试优先级上下文
 func TestConnPool_PriorityContext(t *testing.T) {
 	dialer := &mockDialer{}
-	cp := &ConnPool{
+	cp := &Pool{
 		Dialer: dialer,
 	}
 	defer cp.Close()
@@ -926,7 +926,7 @@ func TestConnPool_PriorityContext(t *testing.T) {
 
 // TestConnPool_AddAndGet 测试 Add 和 Get 方法
 func TestConnPool_AddAndGet(t *testing.T) {
-	cp := &ConnPool{}
+	cp := &Pool{}
 	defer cp.Close()
 
 	addr := &Addr{Net: "tcp", Name: "127.0.0.1:8080"}
@@ -954,7 +954,7 @@ func TestConnPool_AddAndGet(t *testing.T) {
 // TestConnPool_CloseIdleConnections 测试关闭空闲连接
 func TestConnPool_CloseIdleConnections(t *testing.T) {
 	dialer := &mockDialer{}
-	cp := &ConnPool{
+	cp := &Pool{
 		Dialer: dialer,
 	}
 	defer cp.Close()
@@ -995,7 +995,7 @@ func TestConnPool_CloseIdleConnections(t *testing.T) {
 // TestConnPool_Close 测试关闭连接池
 func TestConnPool_Close(t *testing.T) {
 	dialer := &mockDialer{}
-	cp := &ConnPool{
+	cp := &Pool{
 		Dialer: dialer,
 	}
 

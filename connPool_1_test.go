@@ -184,7 +184,7 @@ func TestConnPool_DialAndClose(t *testing.T) {
 	}
 
 	// Setup a ConnPool
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:     dialer,
 		MaxConn:    10,
 		IdeConn:    5,
@@ -286,7 +286,7 @@ func TestConnPool_IdeConnLimit(t *testing.T) {
 		wg: &serverWG,
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:     dialer,
 		MaxConn:    0, // No max total connections
 		IdeConn:    1, // Max 1 idle connection
@@ -334,7 +334,7 @@ func TestConnPool_Discard(t *testing.T) {
 		wg: &serverWG,
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 10,
 		IdeConn: 10,
@@ -376,7 +376,7 @@ func TestConnPool_RawConn(t *testing.T) {
 		wg: &serverWG,
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 10,
 		IdeConn: 10,
@@ -456,7 +456,7 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 		wg: &serverWG,
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 10,
 		IdeConn: 10,
@@ -509,7 +509,7 @@ func TestConnPool_DialContext_Cancelled(t *testing.T) {
 		simulateLatency: 100 * time.Millisecond, // Simulate slow dial
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer: dialer,
 	}
 	defer pool.Close()
@@ -535,7 +535,7 @@ func TestConnPool_Add_Put(t *testing.T) {
 	targetAddr := "localhost:12352"
 	network := "tcp"
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer: &mockDialer1{},
 	}
 	defer pool.Close()
@@ -606,7 +606,7 @@ func TestConnPool_Add_Put(t *testing.T) {
 	t.Run("Put_ErrConnAlreadyExists", func(t *testing.T) {
 		pool.CloseIdleConnections()
 		pool.Close()
-		pool = &ConnPool{
+		pool = &Pool{
 			MaxConn: 10,
 			IdeConn: 10,
 		}
@@ -638,7 +638,7 @@ func TestConnPool_Get(t *testing.T) {
 	targetAddr := "localhost:12353"
 	network := "tcp"
 
-	pool := &ConnPool{}
+	pool := &Pool{}
 	defer pool.Close()
 
 	mockAddr := newMockVConn1(network, targetAddr)
@@ -688,7 +688,7 @@ func TestConnPool_Get(t *testing.T) {
 }
 
 func TestConnPool_CloseAndClosedState(t *testing.T) {
-	pool := &ConnPool{}
+	pool := &Pool{}
 	targetAddr := "localhost:12354"
 	network := "tcp"
 
@@ -788,7 +788,7 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 		return clientPipe, nil
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 50, // Max 50 active/idle connections
 		IdeConn: 20, // Max 20 idle connections
@@ -922,7 +922,7 @@ func BenchmarkConnPool_DialRecycle(b *testing.B) {
 		nextConn: clientPipe, // This will be consumed once
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 1, // Only one connection
 		IdeConn: 1,
@@ -960,7 +960,7 @@ func BenchmarkConnPool_DialNew(b *testing.B) {
 		wg: &serverWG,
 	}
 
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 0, // No max, always new
 		IdeConn: 0, // No idle pool
@@ -1001,7 +1001,7 @@ func BenchmarkConnPool_ReadWrite(b *testing.B) {
 	dialer := &mockDialer1{
 		nextConn: clientPipe,
 	}
-	pool := &ConnPool{
+	pool := &Pool{
 		Dialer:  dialer,
 		MaxConn: 1,
 		IdeConn: 1,

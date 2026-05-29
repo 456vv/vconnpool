@@ -45,7 +45,7 @@ func Test_ConnPool_1(t *testing.T) {
 		as.Equal(d, 2)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 2)
 
 		cp.CloseIdleConnections()
@@ -54,7 +54,7 @@ func Test_ConnPool_1(t *testing.T) {
 		d = cp.ConnNum()
 		as.Equal(d, 0)
 
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 	})
 }
@@ -81,7 +81,7 @@ func Test_ConnPool_2(t *testing.T) {
 		as.Equal(d, 1)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 1)
 
 		d = cp.ConnNum()
@@ -111,7 +111,7 @@ func Test_ConnPool_4(t *testing.T) {
 		as.Equal(d, 1)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 1)
 
 		// 从池中读出
@@ -131,7 +131,7 @@ func Test_ConnPool_4(t *testing.T) {
 		as.Equal(d, 0)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 	})
 }
@@ -162,7 +162,7 @@ func Test_ConnPool_5(t *testing.T) {
 		as.Equal(d, 1)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 1)
 
 		// 从池中读取
@@ -174,7 +174,7 @@ func Test_ConnPool_5(t *testing.T) {
 		as.Equal(d, 0)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 
 		cp.Close()
@@ -213,7 +213,7 @@ func Test_ConnPool_6(t *testing.T) {
 		as.Equal(d, 1)
 
 		time.Sleep(100 * time.Millisecond)
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 
 		// 废弃这个连接，不让他进入池内
@@ -244,7 +244,7 @@ func Test_ConnPool_7(t *testing.T) {
 		conn.Close() // 回池
 
 		// 上面回池之后，池中应该有一个空闲连接
-		d := cp.ConnNumIde(raddr.Network(), raddr.String())
+		d := cp.ConnNumIde(raddr)
 		as.Equal(d, 1)
 		as.Equal(cp.ConnNum(), 1)
 
@@ -258,12 +258,12 @@ func Test_ConnPool_7(t *testing.T) {
 		err = cp.Put(conn1, conn1.RemoteAddr())
 		as.NotError(err)
 		err = cp.Put(conn1, conn1.RemoteAddr()) // 重复回池，应该被忽略
-		as.NotError(err)
+		as.Error(err)
 		err = cp.Put(conn1, conn1.RemoteAddr()) // 重复回池，应该被忽略
-		as.NotError(err)
+		as.Error(err)
 
 		// 上面回池之后，池中应该有一个空闲连接
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 1)
 		as.Equal(cp.ConnNum(), 1)
 
@@ -271,7 +271,7 @@ func Test_ConnPool_7(t *testing.T) {
 		conn, err = cp.Dial(raddr.Network(), raddr.String())
 		as.NotError(err)
 		// 判断连接数量和空闲数量
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 		as.Equal(cp.ConnNum(), 1)
 
@@ -279,7 +279,7 @@ func Test_ConnPool_7(t *testing.T) {
 		conn.(Conn).Discard() // 废弃连接，不让他进入池内
 		conn.Close()
 		// 真正关闭连接之后，池中应该没有空闲连接了
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 		as.Equal(cp.ConnNum(), 0)
 	})
@@ -308,14 +308,14 @@ func Test_ConnPool_8(t *testing.T) {
 		as.NotError(err)
 		conn.Close()
 
-		d := cp.ConnNumIde(raddr.Network(), raddr.String())
+		d := cp.ConnNumIde(raddr)
 		as.Equal(d, 2)
 		as.Equal(cp.ConnNum(), 2)
 
 		cp.CloseIdleConnections()
 		time.Sleep(100 * time.Millisecond)
 
-		d = cp.ConnNumIde(raddr.Network(), raddr.String())
+		d = cp.ConnNumIde(raddr)
 		as.Equal(d, 0)
 		as.Equal(cp.ConnNum(), 0)
 	})
@@ -840,11 +840,13 @@ func TestConnPool_IdleConnLimit(t *testing.T) {
 	}
 	defer cp.Close()
 
-	address := "127.0.0.1:8080"
+	network := "tcp"
+	targetAddr := "127.0.0.1:8080"
+	addr := &Addr{Net: network, Name: targetAddr}
 
 	// 创建并关闭多个连接
 	for i := 0; i < ideConn+2; i++ {
-		conn, err := cp.Dial("tcp", address)
+		conn, err := cp.Dial("tcp", targetAddr)
 		if err != nil {
 			t.Fatalf("Dial %d failed: %v", i, err)
 		}
@@ -852,7 +854,7 @@ func TestConnPool_IdleConnLimit(t *testing.T) {
 	}
 
 	// 验证空闲连接数不超过限制
-	idleCount := cp.ConnNumIde("tcp", address)
+	idleCount := cp.ConnNumIde(addr)
 	if idleCount > ideConn {
 		t.Errorf("Idle connections = %d, expected <= %d", idleCount, ideConn)
 	}
@@ -868,17 +870,19 @@ func TestConnPool_IdleTimeout(t *testing.T) {
 	}
 	defer cp.Close()
 
-	address := "127.0.0.1:8080"
+	network := "tcp"
+	targetAddr := "127.0.0.1:8080"
+	addr := &Addr{Net: network, Name: targetAddr}
 
 	// 创建并关闭连接
-	conn, err := cp.Dial("tcp", address)
+	conn, err := cp.Dial("tcp", targetAddr)
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
 	conn.Close()
 
 	// 验证空闲连接存在
-	if cp.ConnNumIde("tcp", address) == 0 {
+	if cp.ConnNumIde(addr) == 0 {
 		t.Error("No idle connections after close")
 	}
 
@@ -886,7 +890,7 @@ func TestConnPool_IdleTimeout(t *testing.T) {
 	time.Sleep(timeout + 50*time.Millisecond)
 
 	// 验证空闲连接被清理
-	if cp.ConnNumIde("tcp", address) != 0 {
+	if cp.ConnNumIde(addr) != 0 {
 		t.Error("Idle connections not cleaned up after timeout")
 	}
 }
@@ -971,7 +975,7 @@ func TestConnPool_CloseIdleConnections(t *testing.T) {
 	// 验证有空闲连接
 	totalIdle := 0
 	for i := 0; i < 5; i++ {
-		totalIdle += cp.ConnNumIde("tcp", fmt.Sprintf("127.0.0.1:%d", 8080+i))
+		totalIdle += cp.ConnNumIde(&Addr{Net: "tcp", Name: fmt.Sprintf("127.0.0.1:%d", 8080+i)})
 	}
 
 	if totalIdle != 5 {
@@ -984,7 +988,7 @@ func TestConnPool_CloseIdleConnections(t *testing.T) {
 	// 验证空闲连接被清理
 	totalIdle = 0
 	for i := 0; i < 5; i++ {
-		totalIdle += cp.ConnNumIde("tcp", fmt.Sprintf("127.0.0.1:%d", 8080+i))
+		totalIdle += cp.ConnNumIde(&Addr{Net: "tcp", Name: fmt.Sprintf("127.0.0.1:%d", 8080+i)})
 	}
 
 	if totalIdle != 0 {

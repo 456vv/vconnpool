@@ -233,10 +233,12 @@ func (ic *idleConn) wait(timeout time.Duration) {
 }
 
 type pools struct {
-	cp      *Pool
-	mu      sync.Mutex
-	idle    []*idleConn
-	present map[net.Conn]struct{} // 用于 O(1) 查重
+	cp            *Pool
+	mu            sync.Mutex
+	idle          []*idleConn
+	present       map[net.Conn]struct{} // 用于 O(1) 查重
+	connExhausted []chan bool
+	connAvailable []chan bool
 }
 
 func (p *pools) put(conn net.Conn, timeout time.Duration) error {
@@ -261,6 +263,7 @@ func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 	ic := &idleConn{conn: conn, vc: vc, pool: p}
 	p.idle = append(p.idle, ic)
 	p.present[conn] = struct{}{}
+	p.notifyConnAvailable(true)
 	p.mu.Unlock()
 
 	go ic.wait(timeout)
@@ -284,8 +287,13 @@ func (p *pools) get() (net.Conn, error) {
 			p.cp.connNum.Add(-1)
 			continue
 		}
+		if len(p.idle) == 0 {
+			p.checkConnExhaust(true)
+		}
+		// 连接健康，返回给调用者
 		return ic.conn, nil
 	}
+	p.checkConnExhaust(true)
 	return nil, ErrConnNotAvailable
 }
 
@@ -312,6 +320,56 @@ func (p *pools) remove(ic *idleConn) {
 	}
 }
 
+func (p *pools) waitConnAvailable() <-chan bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ch := make(chan bool, 1)
+	if len(p.idle) > 0 {
+		p.notifyConnAvailable(true)
+		ch <- true
+		close(ch)
+		return ch
+	}
+
+	p.connAvailable = append(p.connAvailable, ch)
+	return ch
+}
+
+func (p *pools) notifyConnAvailable(b bool) {
+	if len(p.connAvailable) > 0 {
+		for _, ch := range p.connAvailable {
+			ch <- b
+			close(ch)
+		}
+		p.connAvailable = nil
+	}
+}
+
+func (p *pools) waitConnExhaust() <-chan bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	ch := make(chan bool, 1)
+	if len(p.idle) == 0 {
+		p.checkConnExhaust(true)
+		ch <- true
+		close(ch)
+		return ch
+	}
+
+	p.connExhausted = append(p.connExhausted, ch)
+	return ch
+}
+
+func (p *pools) checkConnExhaust(b bool) {
+	if len(p.connExhausted) > 0 {
+		for _, ch := range p.connExhausted {
+			ch <- b
+			close(ch)
+		}
+		p.connExhausted = nil
+	}
+}
+
 // --- ConnPool 主体 ---
 
 var defaultDialer = &net.Dialer{
@@ -329,10 +387,41 @@ type Pool struct {
 	connNum atomic.Int32
 	conns   sync.Map // 使用 sync.Map 优化读性能
 	closed  atomic.Bool
+	mu      sync.Mutex
+}
+
+func addrKey(network, address string) string {
+	return network + "," + address
+}
+
+func (p *Pool) WaitConnAvailable(addr net.Addr) <-chan bool {
+	key := addrKey(addr.Network(), addr.String())
+	v, ok := p.conns.Load(key)
+	if !ok {
+		ch := make(chan bool, 1)
+		ch <- false
+		close(ch)
+		return ch
+	}
+	ps := v.(*pools)
+	return ps.waitConnAvailable()
+}
+
+func (p *Pool) WaitConnExhaust(addr net.Addr) <-chan bool {
+	key := addrKey(addr.Network(), addr.String())
+	v, ok := p.conns.Load(key)
+	if !ok {
+		ch := make(chan bool, 1)
+		ch <- false
+		close(ch)
+		return ch
+	}
+	ps := v.(*pools)
+	return ps.waitConnExhaust()
 }
 
 func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
-	key := network + "," + address
+	key := addrKey(network, address)
 	v, ok := p.conns.Load(key)
 	if !ok {
 		return nil, ErrConnNotAvailable
@@ -345,6 +434,7 @@ func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
 		ps.mu.Lock()
 		if len(ps.idle) == 0 {
 			p.conns.Delete(key)
+			ps.notifyConnAvailable(false)
 		}
 		ps.mu.Unlock()
 	}
@@ -352,7 +442,7 @@ func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
 }
 
 func (p *Pool) getPoolConnCount(network, address string) int {
-	key := network + "," + address
+	key := addrKey(network, address)
 	v, ok := p.conns.Load(key)
 	if !ok {
 		return 0
@@ -373,8 +463,7 @@ func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr) error {
 		return ErrConnPoolClose
 	}
 
-	key := addr.Network() + "," + addr.String()
-
+	key := addrKey(addr.Network(), addr.String())
 	// 使用 LoadOrStore 确保线程安全地初始化子池
 	v, _ := p.conns.LoadOrStore(key, &pools{cp: p, present: make(map[net.Conn]struct{})})
 	ps := v.(*pools)
@@ -490,6 +579,7 @@ func (p *Pool) Get(addr net.Addr) (conn net.Conn, err error) {
 	if err != nil {
 		return nil, err
 	}
+
 	// 连接所有权转移给调用者，减少计数
 	p.connNum.Add(-1)
 	return conn, nil
@@ -524,7 +614,7 @@ func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 	}
 	if err := p.putPoolConn(conn, addr); err != nil {
 		p.connNum.Add(-1)
-		if errors.Is(err, ErrConnAlreadyExists) {
+		if !errors.Is(err, ErrConnAlreadyExists) {
 			return nil
 		}
 		return err
@@ -532,9 +622,31 @@ func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 	return nil
 }
 
-// CloseIdleConnections 关闭空闲连接池
+// CloseIdleConnection 关闭空闲连接池
+func (p *Pool) CloseIdleConnection(addr net.Addr) {
+	key := addrKey(addr.Network(), addr.String())
+	v, ok := p.conns.Load(key)
+	if !ok {
+		return
+	}
+
+	ps := v.(*pools)
+	ps.mu.Lock()
+	for _, ic := range ps.idle {
+		ic.vc.CancelNotify(net.ErrClosed)
+		ic.conn.Close()
+		p.connNum.Add(-1)
+	}
+	ps.idle = nil
+	ps.present = nil
+	ps.notifyConnAvailable(false)
+	ps.checkConnExhaust(false)
+	ps.mu.Unlock()
+}
+
 func (p *Pool) CloseIdleConnections() {
 	p.conns.Range(func(key, value interface{}) bool {
+		p.conns.Delete(key)
 		ps := value.(*pools)
 		ps.mu.Lock()
 		for _, ic := range ps.idle {
@@ -544,8 +656,9 @@ func (p *Pool) CloseIdleConnections() {
 		}
 		ps.idle = nil
 		ps.present = nil
+		ps.notifyConnAvailable(false)
+		ps.checkConnExhaust(false)
 		ps.mu.Unlock()
-		p.conns.Delete(key)
 		return true
 	})
 }
@@ -565,12 +678,12 @@ func (p *Pool) ConnNum() int {
 }
 
 // ConnNumIde 当前空闲连接数量
-func (p *Pool) ConnNumIde(network, address string) int {
+func (p *Pool) ConnNumIde(addr net.Addr) int {
 	if p.closed.Load() {
 		return 0
 	}
 
-	return p.getPoolConnCount(network, address)
+	return p.getPoolConnCount(addr.Network(), addr.String())
 }
 
 func ResolveAddr(network, address string) (net.Addr, error) {

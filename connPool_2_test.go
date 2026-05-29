@@ -39,6 +39,9 @@ func (m *mockDialer2) DialContext(ctx context.Context, network, address string) 
 
 // TestConnPool_Functional 测试连接池的核心功能：创建、复用、限制
 func TestConnPool_Functional(t *testing.T) {
+	network := "tcp"
+	targetAddr := "127.0.0.1:8080"
+	addr := &Addr{Net: network, Name: targetAddr}
 	pool := &Pool{
 		Dialer:     &mockDialer2{},
 		MaxConn:    5,
@@ -48,7 +51,7 @@ func TestConnPool_Functional(t *testing.T) {
 	defer pool.Close()
 
 	// 1. 测试 Dial 和复用
-	c1, err := pool.Dial("tcp", "127.0.0.1:8080")
+	c1, err := pool.Dial(network, targetAddr)
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
@@ -58,12 +61,12 @@ func TestConnPool_Functional(t *testing.T) {
 
 	// 关闭 c1，它应该进入空闲池
 	c1.Close()
-	if pool.ConnNumIde("tcp", "127.0.0.1:8080") != 1 {
-		t.Errorf("Expected 1 idle conn, got %d", pool.ConnNumIde("tcp", "127.0.0.1:8080"))
+	if pool.ConnNumIde(addr) != 1 {
+		t.Errorf("Expected 1 idle conn, got %d", pool.ConnNumIde(addr))
 	}
 
 	// 再次 Dial，应该是复用的
-	c2, _ := pool.Dial("tcp", "127.0.0.1:8080")
+	c2, _ := pool.Dial(network, targetAddr)
 	if sc, ok := c2.(Conn); !ok || !sc.IsReuseConn() {
 		t.Error("Expected reused connection")
 	}
@@ -72,13 +75,13 @@ func TestConnPool_Functional(t *testing.T) {
 	// 2. 测试 MaxConn 限制
 	var conns []net.Conn
 	for i := 0; i < 5; i++ {
-		c, err := pool.Dial("tcp", "127.0.0.1:8080")
+		c, err := pool.Dial(network, targetAddr)
 		if err != nil {
 			t.Errorf("Dial %d failed: %v", i, err)
 		}
 		conns = append(conns, c)
 	}
-	_, err = pool.Dial("tcp", "127.0.0.1:8080")
+	_, err = pool.Dial(network, targetAddr)
 	if !errors.Is(err, ErrConnPoolMax) {
 		t.Errorf("Expected ErrConnPoolMax, got %v", err)
 	}
@@ -91,7 +94,7 @@ func TestConnPool_Functional(t *testing.T) {
 	// 3. 测试 IdeConn (空闲上限)
 	// 虽然开了 5 个，但 IdeConn 是 2，关闭后池里应只有 2 个，其余 3 个应被物理关闭
 	time.Sleep(time.Millisecond * 100) // 等待异步回收完成
-	numIde := pool.ConnNumIde("tcp", "127.0.0.1:8080")
+	numIde := pool.ConnNumIde(addr)
 	if numIde != 2 {
 		t.Errorf("Idle connections %d did not match expected 2", numIde)
 	}
@@ -99,11 +102,14 @@ func TestConnPool_Functional(t *testing.T) {
 
 // TestConnPool_RawConn_Discard 测试原始连接获取和废弃逻辑
 func TestConnPool_RawConn_Discard(t *testing.T) {
+	network := "tcp"
+	targetAddr := "127.0.0.1:8080"
+	addr := &Addr{Net: network, Name: targetAddr}
 	pool := &Pool{Dialer: &mockDialer2{}}
 	defer pool.Close()
 
 	// 测试 Discard
-	c, err := pool.Dial("tcp", "127.0.0.1:0")
+	c, err := pool.Dial(network, targetAddr)
 	if err != nil {
 		t.Fatalf("Failed to dial: %v", err)
 	}
@@ -114,19 +120,19 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 
 	sc.Discard()
 	c.Close() // 标记为 Discard 后，Close 不会放回池，且 ConnNum 应该减少
-	if pool.ConnNumIde("tcp", "127.0.0.1:0") != 0 {
+	if pool.ConnNumIde(addr) != 0 {
 		t.Error("Discarded connection should not be in pool")
 	}
 
 	// 测试 RawConn
-	c2, _ := pool.Dial("tcp", "127.0.0.1:0")
+	c2, _ := pool.Dial(network, targetAddr)
 	sc2 := c2.(Conn)
 	raw := sc2.RawConn()
 	if raw == nil {
 		t.Fatal("RawConn returned nil")
 	}
 	defer raw.Close()
-	if pool.ConnNumIde("tcp", "127.0.0.1:0") != 0 {
+	if pool.ConnNumIde(addr) != 0 {
 		t.Error("RawConn should not be in pool")
 	}
 	sc2.Close()
@@ -187,7 +193,7 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 					}
 				case 2: // 检查状态方法
 					pool.ConnNum()
-					pool.ConnNumIde("tcp", addr)
+					pool.ConnNumIde(&Addr{Net: "tcp", Name: addr})
 				case 3: // Discard 逻辑
 					c, err := pool.Dial("tcp", addr)
 					if err == nil {

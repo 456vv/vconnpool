@@ -435,6 +435,7 @@ func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
 		if len(ps.idle) == 0 {
 			p.conns.Delete(key)
 			ps.notifyConnAvailable(false)
+			ps.checkConnExhaust(false)
 		}
 		ps.mu.Unlock()
 	}
@@ -631,6 +632,19 @@ func (p *Pool) CloseIdleConnection(addr net.Addr) {
 	}
 
 	ps := v.(*pools)
+	p.closeIdleConnection(ps)
+}
+
+func (p *Pool) CloseIdleConnections() {
+	p.conns.Range(func(key, value interface{}) bool {
+		p.conns.Delete(key)
+		ps := value.(*pools)
+		p.closeIdleConnection(ps)
+		return true
+	})
+}
+
+func (p *Pool) closeIdleConnection(ps *pools) {
 	ps.mu.Lock()
 	for _, ic := range ps.idle {
 		ic.vc.CancelNotify(net.ErrClosed)
@@ -642,25 +656,6 @@ func (p *Pool) CloseIdleConnection(addr net.Addr) {
 	ps.notifyConnAvailable(false)
 	ps.checkConnExhaust(false)
 	ps.mu.Unlock()
-}
-
-func (p *Pool) CloseIdleConnections() {
-	p.conns.Range(func(key, value interface{}) bool {
-		p.conns.Delete(key)
-		ps := value.(*pools)
-		ps.mu.Lock()
-		for _, ic := range ps.idle {
-			ic.vc.CancelNotify(net.ErrClosed)
-			ic.conn.Close()
-			p.connNum.Add(-1)
-		}
-		ps.idle = nil
-		ps.present = nil
-		ps.notifyConnAvailable(false)
-		ps.checkConnExhaust(false)
-		ps.mu.Unlock()
-		return true
-	})
 }
 
 func (p *Pool) Close() error {

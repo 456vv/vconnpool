@@ -631,6 +631,7 @@ func (p *Pool) CloseIdleConnection(addr net.Addr) {
 		return
 	}
 
+	p.conns.Delete(key)
 	ps := v.(*pools)
 	p.closeIdleConnection(ps)
 }

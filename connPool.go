@@ -237,8 +237,8 @@ type pools struct {
 	mu            sync.Mutex
 	idle          []*idleConn
 	present       map[net.Conn]struct{} // 用于 O(1) 查重
-	connExhausted []chan struct{}
-	connAvailable []chan struct{}
+	connExhausted map[int][]chan struct{}
+	connAvailable map[int][]chan struct{}
 }
 
 func (p *pools) put(conn net.Conn, timeout time.Duration) error {
@@ -287,9 +287,7 @@ func (p *pools) get() (net.Conn, error) {
 			p.cp.connNum.Add(-1)
 			continue
 		}
-		if len(p.idle) == 0 {
-			p.checkConnExhaust()
-		}
+		p.checkConnExhaust()
 		// 连接健康，返回给调用者
 		return ic.conn, nil
 	}
@@ -320,53 +318,60 @@ func (p *pools) remove(ic *idleConn) {
 	}
 }
 
-func (p *pools) waitConnAvailable() <-chan struct{} {
+func (p *pools) waitConnAvailable(l int) <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ch := make(chan struct{}, 1)
-	if len(p.idle) > 0 {
+	if len(p.idle) >= l {
 		p.notifyConnAvailable()
 		ch <- struct{}{}
 		close(ch)
 		return ch
 	}
 
-	p.connAvailable = append(p.connAvailable, ch)
+	p.connAvailable[l] = append(p.connAvailable[l], ch)
 	return ch
 }
 
 func (p *pools) notifyConnAvailable() {
-	if len(p.connAvailable) > 0 {
-		for _, ch := range p.connAvailable {
-			ch <- struct{}{}
-			close(ch)
+	l := len(p.idle)
+	for n, ca := range p.connAvailable {
+		if l >= n {
+			for _, ch := range ca {
+				ch <- struct{}{}
+				close(ch)
+			}
+			delete(p.connAvailable, n)
 		}
-		p.connAvailable = nil
 	}
 }
 
-func (p *pools) waitConnExhaust() <-chan struct{} {
+func (p *pools) waitConnExhaust(l int) <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ch := make(chan struct{}, 1)
-	if len(p.idle) == 0 {
+
+	if len(p.idle) <= l {
 		p.checkConnExhaust()
 		ch <- struct{}{}
 		close(ch)
 		return ch
 	}
 
-	p.connExhausted = append(p.connExhausted, ch)
+	p.connExhausted[l] = append(p.connExhausted[l], ch)
 	return ch
 }
 
 func (p *pools) checkConnExhaust() {
-	if len(p.connExhausted) > 0 {
-		for _, ch := range p.connExhausted {
-			ch <- struct{}{}
-			close(ch)
+	l := len(p.idle)
+	for n, ce := range p.connExhausted {
+		if l <= n {
+			for _, ch := range ce {
+				ch <- struct{}{}
+				close(ch)
+			}
+			delete(p.connExhausted, n)
 		}
-		p.connExhausted = nil
 	}
 }
 
@@ -396,17 +401,22 @@ func addrKey(network, address string) string {
 
 func (p *Pool) loadPool(addr net.Addr) *pools {
 	key := addrKey(addr.Network(), addr.String())
-	v, _ := p.conns.LoadOrStore(key, &pools{cp: p, present: make(map[net.Conn]struct{})})
+	v, _ := p.conns.LoadOrStore(key, &pools{
+		cp:            p,
+		present:       make(map[net.Conn]struct{}),
+		connExhausted: make(map[int][]chan struct{}),
+		connAvailable: make(map[int][]chan struct{}),
+	})
 	ps := v.(*pools)
 	return ps
 }
 
-func (p *Pool) WaitConnAvailable(addr net.Addr) <-chan struct{} {
-	return p.loadPool(addr).waitConnAvailable()
+func (p *Pool) WaitConnAvailable(addr net.Addr, l int) <-chan struct{} {
+	return p.loadPool(addr).waitConnAvailable(l)
 }
 
-func (p *Pool) WaitConnExhaust(addr net.Addr) <-chan struct{} {
-	return p.loadPool(addr).waitConnExhaust()
+func (p *Pool) WaitConnExhaust(addr net.Addr, l int) <-chan struct{} {
+	return p.loadPool(addr).waitConnExhaust(l)
 }
 
 func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {

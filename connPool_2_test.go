@@ -43,10 +43,10 @@ func TestConnPool_Functional(t *testing.T) {
 	targetAddr := "127.0.0.1:8080"
 	addr := &Addr{Net: network, Name: targetAddr}
 	pool := &Pool{
-		Dialer:     &mockDialer2{},
-		MaxConn:    5,
-		IdeConn:    2,
-		IdeTimeout: time.Second * 2,
+		Dialer:      &mockDialer2{},
+		MaxConn:     5,
+		IdleConn:    2,
+		IdleTimeout: time.Second * 2,
 	}
 	defer pool.Close()
 
@@ -61,8 +61,8 @@ func TestConnPool_Functional(t *testing.T) {
 
 	// 关闭 c1，它应该进入空闲池
 	c1.Close()
-	if pool.ConnNumIde(addr) != 1 {
-		t.Errorf("Expected 1 idle conn, got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 1 {
+		t.Errorf("Expected 1 idle conn, got %d", pool.ConnNumIdle(addr))
 	}
 
 	// 再次 Dial，应该是复用的
@@ -94,7 +94,7 @@ func TestConnPool_Functional(t *testing.T) {
 	// 3. 测试 IdeConn (空闲上限)
 	// 虽然开了 5 个，但 IdeConn 是 2，关闭后池里应只有 2 个，其余 3 个应被物理关闭
 	time.Sleep(time.Millisecond * 100) // 等待异步回收完成
-	numIde := pool.ConnNumIde(addr)
+	numIde := pool.ConnNumIdle(addr)
 	if numIde != 2 {
 		t.Errorf("Idle connections %d did not match expected 2", numIde)
 	}
@@ -120,7 +120,7 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 
 	sc.Discard()
 	c.Close() // 标记为 Discard 后，Close 不会放回池，且 ConnNum 应该减少
-	if pool.ConnNumIde(addr) != 0 {
+	if pool.ConnNumIdle(addr) != 0 {
 		t.Error("Discarded connection should not be in pool")
 	}
 
@@ -132,7 +132,7 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 		t.Fatal("RawConn returned nil")
 	}
 	defer raw.Close()
-	if pool.ConnNumIde(addr) != 0 {
+	if pool.ConnNumIdle(addr) != 0 {
 		t.Error("RawConn should not be in pool")
 	}
 	sc2.Close()
@@ -157,10 +157,10 @@ func TestConnPool_Priority(t *testing.T) {
 
 func TestConnPool_Race_CrossCall(t *testing.T) {
 	pool := &Pool{
-		Dialer:     &mockDialer2{},
-		MaxConn:    50,
-		IdeConn:    10,
-		IdeTimeout: time.Millisecond * 500,
+		Dialer:      &mockDialer2{},
+		MaxConn:     50,
+		IdleConn:    10,
+		IdleTimeout: time.Millisecond * 500,
 	}
 
 	var wg sync.WaitGroup
@@ -193,7 +193,7 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 					}
 				case 2: // 检查状态方法
 					pool.ConnNum()
-					pool.ConnNumIde(&Addr{Net: "tcp", Name: addr})
+					pool.ConnNumIdle(&Addr{Net: "tcp", Name: addr})
 				case 3: // Discard 逻辑
 					c, err := pool.Dial("tcp", addr)
 					if err == nil {
@@ -222,9 +222,9 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 // BenchmarkConnPool_DialAndClose 测试池化后的 Dial+Close 吞吐量
 func BenchmarkConnPool_DialAndClose(b *testing.B) {
 	pool := &Pool{
-		Dialer:  &mockDialer2{},
-		MaxConn: 1000,
-		IdeConn: 500,
+		Dialer:   &mockDialer2{},
+		MaxConn:  1000,
+		IdleConn: 500,
 	}
 	defer pool.Close()
 
@@ -243,9 +243,9 @@ func BenchmarkConnPool_DialAndClose(b *testing.B) {
 // BenchmarkConnPool_DialNewConnection 测试不使用池（或池满）时的性能
 func BenchmarkConnPool_NoPool_Dial(b *testing.B) {
 	pool := &Pool{
-		Dialer:  &mockDialer2{},
-		MaxConn: 0, // 无限制
-		IdeConn: 0, // 不缓存
+		Dialer:   &mockDialer2{},
+		MaxConn:  0, // 无限制
+		IdleConn: 0, // 不缓存
 	}
 	defer pool.Close()
 

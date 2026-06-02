@@ -186,10 +186,10 @@ func TestConnPool_DialAndClose(t *testing.T) {
 
 	// Setup a ConnPool
 	pool := &Pool{
-		Dialer:     dialer,
-		MaxConn:    10,
-		IdeConn:    5,
-		IdeTimeout: time.Second,
+		Dialer:      dialer,
+		MaxConn:     10,
+		IdleConn:    5,
+		IdleTimeout: time.Second,
 	}
 	defer pool.Close()
 
@@ -233,8 +233,8 @@ func TestConnPool_DialAndClose(t *testing.T) {
 			t.Errorf("Expected ConnNum 1 after close, got %d", pool.ConnNum())
 		}
 		addr := &Addr{Net: network, Name: targetAddr}
-		if pool.ConnNumIde(addr) != 1 {
-			t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 1 {
+			t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIdle(addr))
 		}
 	})
 
@@ -251,8 +251,8 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if pool.ConnNum() != 1 { // Still the same connection
 			t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
 		}
-		if pool.ConnNumIde(addr) != 0 { // Connection is now active, not idle
-			t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 0 { // Connection is now active, not idle
+			t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIdle(addr))
 		}
 
 		// Close it again
@@ -260,8 +260,8 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close failed: %v", err)
 		}
-		if pool.ConnNumIde(addr) != 1 {
-			t.Errorf("Expected 1 idle connection after reuse close, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 1 {
+			t.Errorf("Expected 1 idle connection after reuse close, got %d", pool.ConnNumIdle(addr))
 		}
 	})
 
@@ -269,8 +269,8 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		// Wait for the idle timeout to expire
 		time.Sleep(1500 * time.Millisecond) // Slightly longer than IdeTimeout
 
-		if pool.ConnNumIde(addr) != 0 {
-			t.Errorf("Expected 0 idle connections after timeout, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 0 {
+			t.Errorf("Expected 0 idle connections after timeout, got %d", pool.ConnNumIdle(addr))
 		}
 		if pool.ConnNum() != 0 {
 			t.Errorf("Expected ConnNum 0 after timeout, got %d", pool.ConnNum())
@@ -291,10 +291,10 @@ func TestConnPool_IdeConnLimit(t *testing.T) {
 	}
 
 	pool := &Pool{
-		Dialer:     dialer,
-		MaxConn:    0, // No max total connections
-		IdeConn:    1, // Max 1 idle connection
-		IdeTimeout: time.Second,
+		Dialer:      dialer,
+		MaxConn:     0, // No max total connections
+		IdleConn:    1, // Max 1 idle connection
+		IdleTimeout: time.Second,
 	}
 	defer pool.Close()
 
@@ -313,14 +313,14 @@ func TestConnPool_IdeConnLimit(t *testing.T) {
 
 	// Close conn1 (should go to idle pool)
 	conn1.Close()
-	if pool.ConnNumIde(addr) != 1 {
-		t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 1 {
+		t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIdle(addr))
 	}
 
 	// Close conn2 (should be discarded due to IdeConn limit)
 	conn2.Close()
-	if pool.ConnNumIde(addr) != 1 {
-		t.Errorf("Expected still 1 idle connection (conn2 discarded), got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 1 {
+		t.Errorf("Expected still 1 idle connection (conn2 discarded), got %d", pool.ConnNumIdle(addr))
 	}
 	if pool.ConnNum() != 1 { // One was recycled, one discarded
 		t.Errorf("Expected ConnNum 1 (conn2 discarded), got %d", pool.ConnNum())
@@ -340,9 +340,9 @@ func TestConnPool_Discard(t *testing.T) {
 	}
 
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 10,
-		IdeConn: 10,
+		Dialer:   dialer,
+		MaxConn:  10,
+		IdleConn: 10,
 	}
 	defer pool.Close()
 
@@ -365,8 +365,8 @@ func TestConnPool_Discard(t *testing.T) {
 	if pool.ConnNum() != 0 { // Should be 0 because it was discarded
 		t.Errorf("Expected ConnNum 0 after discard and close, got %d", pool.ConnNum())
 	}
-	if pool.ConnNumIde(addr) != 0 {
-		t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 0 {
+		t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIdle(addr))
 	}
 
 	serverWG.Wait()
@@ -383,9 +383,9 @@ func TestConnPool_RawConn(t *testing.T) {
 	}
 
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 10,
-		IdeConn: 10,
+		Dialer:   dialer,
+		MaxConn:  10,
+		IdleConn: 10,
 	}
 	defer pool.Close()
 
@@ -405,8 +405,8 @@ func TestConnPool_RawConn(t *testing.T) {
 	if pool.ConnNum() != 0 { // Should be 0 because RawConn removes it from pool management
 		t.Errorf("Expected ConnNum 0 after RawConn, got %d", pool.ConnNum())
 	}
-	if pool.ConnNumIde(addr) != 0 {
-		t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 0 {
+		t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIdle(addr))
 	}
 
 	conn.Close()
@@ -464,9 +464,9 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 	}
 
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 10,
-		IdeConn: 10,
+		Dialer:   dialer,
+		MaxConn:  10,
+		IdleConn: 10,
 	}
 	defer pool.Close()
 
@@ -477,8 +477,8 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 	conn1.Close() // Put to pool
 
 	// ConnNum should be 1, Ide is 1
-	if pool.ConnNum() != 1 || pool.ConnNumIde(addr) != 1 {
-		t.Fatalf("Expected ConnNum 1 and Ide 1, got %d, %d", pool.ConnNum(), pool.ConnNumIde(addr))
+	if pool.ConnNum() != 1 || pool.ConnNumIdle(addr) != 1 {
+		t.Fatalf("Expected ConnNum 1 and Ide 1, got %d, %d", pool.ConnNum(), pool.ConnNumIdle(addr))
 	}
 	// Dial with priority context: should ignore pool and create new connection
 	ctx := context.WithValue(context.Background(), PriorityContextKey, true)
@@ -492,16 +492,16 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 	if pool.ConnNum() != 2 { // Total connections should now be 2
 		t.Errorf("Expected ConnNum 2, got %d", pool.ConnNum())
 	}
-	if pool.ConnNumIde(addr) != 1 { // Idle connection should still be 1 (the first one)
-		t.Errorf("Expected Ide 1, got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 1 { // Idle connection should still be 1 (the first one)
+		t.Errorf("Expected Ide 1, got %d", pool.ConnNumIdle(addr))
 	}
 
 	conn2.Close() // Put to pool
 	if pool.ConnNum() != 2 {
 		t.Errorf("Expected ConnNum 2 after conn2 close, got %d", pool.ConnNum())
 	}
-	if pool.ConnNumIde(addr) != 2 {
-		t.Errorf("Expected Ide 2, got %d", pool.ConnNumIde(addr))
+	if pool.ConnNumIdle(addr) != 2 {
+		t.Errorf("Expected Ide 2, got %d", pool.ConnNumIdle(addr))
 	}
 
 	pool.CloseIdleConnections()
@@ -563,16 +563,16 @@ func TestConnPool_Add_Put(t *testing.T) {
 		if pool.ConnNum() != 1 {
 			t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
 		}
-		if pool.ConnNumIde(mockAddr) != 1 {
-			t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIde(mockAddr))
+		if pool.ConnNumIdle(mockAddr) != 1 {
+			t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIdle(mockAddr))
 		}
 
 		conn, err := pool.Get(mockAddr)
 		if err != nil {
 			t.Fatalf("Get after Add failed: %v", err)
 		}
-		if pool.ConnNumIde(mockAddr) != 0 {
-			t.Errorf("Expected 0 idle connection after Get, got %d", pool.ConnNumIde(mockAddr))
+		if pool.ConnNumIdle(mockAddr) != 0 {
+			t.Errorf("Expected 0 idle connection after Get, got %d", pool.ConnNumIdle(mockAddr))
 		}
 
 		err = pool.Put(conn, mockAddr)
@@ -580,8 +580,8 @@ func TestConnPool_Add_Put(t *testing.T) {
 			conn.Close()
 			t.Fatal(err)
 		}
-		if pool.ConnNumIde(mockAddr) != 1 { // Should be returned to pool
-			t.Errorf("Expected 1 idle connection after Get and Close, got %d", pool.ConnNumIde(mockAddr))
+		if pool.ConnNumIdle(mockAddr) != 1 { // Should be returned to pool
+			t.Errorf("Expected 1 idle connection after Get and Close, got %d", pool.ConnNumIdle(mockAddr))
 		}
 		pool.CloseIdleConnections()
 	})
@@ -614,8 +614,8 @@ func TestConnPool_Add_Put(t *testing.T) {
 		pool.CloseIdleConnections()
 		pool.Close()
 		pool = &Pool{
-			MaxConn: 10,
-			IdeConn: 10,
+			MaxConn:  10,
+			IdleConn: 10,
 		}
 		defer pool.Close()
 
@@ -633,8 +633,8 @@ func TestConnPool_Add_Put(t *testing.T) {
 		if err == nil {                      // The code handles ErrConnAlreadyExists gracefully by returning nil
 			t.Errorf("Expected nil error for duplicate put due to graceful handling, got %v", err)
 		}
-		if pool.ConnNumIde(mockAddr) != 1 { // Should still be 1 idle conn
-			t.Errorf("Expected 1 idle conn after duplicate put, got %d", pool.ConnNumIde(mockAddr))
+		if pool.ConnNumIdle(mockAddr) != 1 { // Should still be 1 idle conn
+			t.Errorf("Expected 1 idle conn after duplicate put, got %d", pool.ConnNumIdle(mockAddr))
 		}
 		pool.CloseIdleConnections()
 		serverWG.Wait()
@@ -676,8 +676,8 @@ func TestConnPool_Get(t *testing.T) {
 		if conn == nil {
 			t.Fatal("Got nil connection")
 		}
-		if pool.ConnNumIde(addr) != 0 {
-			t.Errorf("Expected 0 idle connections after Get, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 0 {
+			t.Errorf("Expected 0 idle connections after Get, got %d", pool.ConnNumIdle(addr))
 		}
 		if pool.ConnNum() != 0 { // Get removes it from pool's count, calling code should handle it.
 			t.Errorf("Expected ConnNum 0 after Get, got %d", pool.ConnNum())
@@ -712,8 +712,8 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 		t.Fatalf("Dial failed: %v", err)
 	}
 	conn.Close() // Put it to pool
-	if pool.ConnNum() != 1 || pool.ConnNumIde(addr) != 1 {
-		t.Fatalf("Pre-close: ConnNum %d, Ide %d", pool.ConnNum(), pool.ConnNumIde(addr))
+	if pool.ConnNum() != 1 || pool.ConnNumIdle(addr) != 1 {
+		t.Fatalf("Pre-close: ConnNum %d, Ide %d", pool.ConnNum(), pool.ConnNumIdle(addr))
 	}
 
 	t.Run("Close", func(t *testing.T) {
@@ -724,8 +724,8 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 		if pool.ConnNum() != 0 {
 			t.Errorf("Expected ConnNum 0 after Close, got %d", pool.ConnNum())
 		}
-		if pool.ConnNumIde(addr) != 0 {
-			t.Errorf("Expected 0 idle connections after Close, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 0 {
+			t.Errorf("Expected 0 idle connections after Close, got %d", pool.ConnNumIdle(addr))
 		}
 	})
 
@@ -765,8 +765,8 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 		if pool.ConnNum() != 0 { // Should still be 0
 			t.Errorf("ConnNum on closed pool expected 0, got %d", pool.ConnNum())
 		}
-		if pool.ConnNumIde(addr) != 0 { // Should still be 0
-			t.Errorf("ConnNumIde on closed pool expected 0, got %d", pool.ConnNumIde(addr))
+		if pool.ConnNumIdle(addr) != 0 { // Should still be 0
+			t.Errorf("ConnNumIde on closed pool expected 0, got %d", pool.ConnNumIdle(addr))
 		}
 	})
 	serverWG.Wait()
@@ -799,9 +799,9 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 	}
 
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 50, // Max 50 active/idle connections
-		IdeConn: 20, // Max 20 idle connections
+		Dialer:   dialer,
+		MaxConn:  50, // Max 50 active/idle connections
+		IdleConn: 20, // Max 20 idle connections
 	}
 	defer pool.Close()
 
@@ -890,11 +890,11 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	t.Logf("Final ConnNum: %d", pool.ConnNum())
-	t.Logf("Final Idle ConnNum: %d", pool.ConnNumIde(addr))
+	t.Logf("Final Idle ConnNum: %d", pool.ConnNumIdle(addr))
 
 	// Basic assertion: no negative counts, no panics (checked by -race)
-	if pool.ConnNum() < 0 || pool.ConnNumIde(addr) < 0 {
-		t.Errorf("Negative connection count: ConnNum %d, Idle %d", pool.ConnNum(), pool.ConnNumIde(addr))
+	if pool.ConnNum() < 0 || pool.ConnNumIdle(addr) < 0 {
+		t.Errorf("Negative connection count: ConnNum %d, Idle %d", pool.ConnNum(), pool.ConnNumIdle(addr))
 	}
 	// Expect some connections to remain idle or be cleaned up
 	// Exact count is hard to predict due to concurrency and timeouts, but should be reasonable.
@@ -933,9 +933,9 @@ func BenchmarkConnPool_DialRecycle(b *testing.B) {
 	}
 
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 1, // Only one connection
-		IdeConn: 1,
+		Dialer:   dialer,
+		MaxConn:  1, // Only one connection
+		IdleConn: 1,
 	}
 	defer pool.Close()
 
@@ -971,9 +971,9 @@ func BenchmarkConnPool_DialNew(b *testing.B) {
 	}
 
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 0, // No max, always new
-		IdeConn: 0, // No idle pool
+		Dialer:   dialer,
+		MaxConn:  0, // No max, always new
+		IdleConn: 0, // No idle pool
 	}
 	defer pool.Close()
 
@@ -1012,9 +1012,9 @@ func BenchmarkConnPool_ReadWrite(b *testing.B) {
 		nextConn: clientPipe,
 	}
 	pool := &Pool{
-		Dialer:  dialer,
-		MaxConn: 1,
-		IdeConn: 1,
+		Dialer:   dialer,
+		MaxConn:  1,
+		IdleConn: 1,
 	}
 	defer pool.Close()
 

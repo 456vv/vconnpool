@@ -252,7 +252,7 @@ func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 		return ErrConnAlreadyExists
 	}
 
-	if p.cp.IdeConn > 0 && len(p.idle) >= p.cp.IdeConn {
+	if p.cp.IdleConn > 0 && len(p.idle) >= p.cp.IdleConn {
 		p.mu.Unlock()
 		return ErrConnIdleMax
 	}
@@ -380,8 +380,8 @@ var defaultDialer = &net.Dialer{
 type Pool struct {
 	Dialer      Dialer
 	ResolveAddr func(network, address string) (net.Addr, error)
-	IdeConn     int
-	IdeTimeout  time.Duration
+	IdleConn    int
+	IdleTimeout time.Duration
 	MaxConn     int
 
 	connNum atomic.Int32
@@ -469,7 +469,7 @@ func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr) error {
 	v, _ := p.conns.LoadOrStore(key, &pools{cp: p, present: make(map[net.Conn]struct{})})
 	ps := v.(*pools)
 
-	return ps.put(conn, p.IdeTimeout)
+	return ps.put(conn, p.IdleTimeout)
 }
 
 func (p *Pool) checkAndIncConnNum() error {
@@ -673,8 +673,8 @@ func (p *Pool) ConnNum() int {
 	return int(p.connNum.Load())
 }
 
-// ConnNumIde 当前空闲连接数量
-func (p *Pool) ConnNumIde(addr net.Addr) int {
+// ConnNumIdle 当前空闲连接数量
+func (p *Pool) ConnNumIdle(addr net.Addr) int {
 	if p.closed.Load() {
 		return 0
 	}

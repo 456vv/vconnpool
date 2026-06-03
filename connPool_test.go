@@ -258,9 +258,9 @@ func Test_ConnPool_7(t *testing.T) {
 		err = cp.Put(conn1, conn1.RemoteAddr())
 		as.NotError(err)
 		err = cp.Put(conn1, conn1.RemoteAddr()) // 重复回池，应该被忽略
-		as.Error(err)
+		as.NotError(err)
 		err = cp.Put(conn1, conn1.RemoteAddr()) // 重复回池，应该被忽略
-		as.Error(err)
+		as.NotError(err)
 
 		// 上面回池之后，池中应该有一个空闲连接
 		d = cp.ConnNumIdle(raddr)

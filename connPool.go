@@ -316,6 +316,7 @@ func (p *pools) remove(ic *idleConn) {
 			break
 		}
 	}
+	p.checkConnExhaust()
 }
 
 func (p *pools) waitConnAvailable(l int) <-chan struct{} {
@@ -607,7 +608,7 @@ func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 	}
 	if err := p.putPoolConn(conn, addr); err != nil {
 		p.connNum.Add(-1)
-		if !errors.Is(err, ErrConnAlreadyExists) {
+		if errors.Is(err, ErrConnAlreadyExists) {
 			return nil
 		}
 		return err

@@ -630,7 +630,7 @@ func TestConnPool_Add_Put(t *testing.T) {
 		}
 
 		err = pool.Put(clientPipe, mockAddr) // Second put of the same underlying connection
-		if err == nil {                      // The code handles ErrConnAlreadyExists gracefully by returning nil
+		if err != nil {                      // The code handles ErrConnAlreadyExists gracefully by returning nil
 			t.Errorf("Expected nil error for duplicate put due to graceful handling, got %v", err)
 		}
 		if pool.ConnNumIdle(mockAddr) != 1 { // Should still be 1 idle conn

@@ -119,7 +119,7 @@ func Test_ConnPool_4(t *testing.T) {
 		as.NotError(err)
 
 		// 原始连接
-		netConn := conn1.(Conn).RawConn()
+		netConn := conn1.RawConn()
 		netConn.Close()
 
 		// 不会被回收，因为已经使用RawConn读取连接
@@ -206,9 +206,6 @@ func Test_ConnPool_6(t *testing.T) {
 		conn, err = cp.Dial(raddr.Network(), raddr.String())
 		as.NotError(err)
 
-		c1, ok := conn.(Conn)
-		as.True(ok)
-
 		d := cp.ConnNum()
 		as.Equal(d, 1)
 
@@ -217,8 +214,8 @@ func Test_ConnPool_6(t *testing.T) {
 		as.Equal(d, 0)
 
 		// 废弃这个连接，不让他进入池内
-		c1.Discard()
-		c1.Close()
+		conn.Discard()
+		conn.Close()
 
 		d = cp.ConnNum()
 		as.Equal(d, 0)
@@ -276,7 +273,7 @@ func Test_ConnPool_7(t *testing.T) {
 		as.Equal(cp.ConnNum(), 1)
 
 		// 关闭连接
-		conn.(Conn).Discard() // 废弃连接，不让他进入池内
+		conn.Discard() // 废弃连接，不让他进入池内
 		conn.Close()
 		// 真正关闭连接之后，池中应该没有空闲连接了
 		d = cp.ConnNumIdle(raddr)

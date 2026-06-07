@@ -67,7 +67,7 @@ func TestConnPool_Functional(t *testing.T) {
 
 	// 再次 Dial，应该是复用的
 	c2, _ := pool.Dial(network, targetAddr)
-	if sc, ok := c2.(Conn); !ok || !sc.IsReuseConn() {
+	if !c2.IsReuseConn() {
 		t.Error("Expected reused connection")
 	}
 	c2.Close()
@@ -113,12 +113,8 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to dial: %v", err)
 	}
-	sc, ok := c.(Conn)
-	if !ok {
-		t.Fatal("Failed to assert connection to Conn interface")
-	}
 
-	sc.Discard()
+	c.Discard()
 	c.Close() // 标记为 Discard 后，Close 不会放回池，且 ConnNum 应该减少
 	if pool.ConnNumIdle(addr) != 0 {
 		t.Error("Discarded connection should not be in pool")
@@ -126,8 +122,7 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 
 	// 测试 RawConn
 	c2, _ := pool.Dial(network, targetAddr)
-	sc2 := c2.(Conn)
-	raw := sc2.RawConn()
+	raw := c2.RawConn()
 	if raw == nil {
 		t.Fatal("RawConn returned nil")
 	}
@@ -135,7 +130,7 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 	if pool.ConnNumIdle(addr) != 0 {
 		t.Error("RawConn should not be in pool")
 	}
-	sc2.Close()
+	c2.Close()
 }
 
 // TestConnPool_Priority 测试优先级 Dial
@@ -149,7 +144,7 @@ func TestConnPool_Priority(t *testing.T) {
 	// 使用优先级 Context
 	ctx := context.WithValue(context.Background(), PriorityContextKey, true)
 	c2, _ := pool.DialContext(ctx, "tcp", "127.0.0.1:0")
-	if c2.(Conn).IsReuseConn() {
+	if c2.IsReuseConn() {
 		t.Error("Priority Dial should create new connection, not reuse")
 	}
 	c2.Close()
@@ -198,7 +193,7 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 					c, err := pool.Dial("tcp", addr)
 					if err == nil {
 						if j%2 == 0 {
-							c.(Conn).Discard()
+							c.Discard()
 						}
 						c.Close()
 					}
@@ -256,7 +251,7 @@ func BenchmarkConnPool_NoPool_Dial(b *testing.B) {
 			if err != nil {
 				continue
 			}
-			conn := c.(Conn).RawConn()
+			conn := c.RawConn()
 			if pool.Put(conn, conn.RemoteAddr()) != nil {
 				conn.Close() // 无法放回池，直接关闭
 			}

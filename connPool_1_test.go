@@ -198,7 +198,7 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial failed: %v", err)
 		}
-		if conn.(Conn).IsReuseConn() {
+		if conn.IsReuseConn() {
 			t.Error("Expected new connection, but IsReuseConn returned true")
 		}
 		if pool.ConnNum() != 1 {
@@ -245,7 +245,7 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial failed: %v", err)
 		}
-		if !conn.(Conn).IsReuseConn() {
+		if !conn.IsReuseConn() {
 			t.Error("Expected reused connection, but IsReuseConn returned false")
 		}
 		if pool.ConnNum() != 1 { // Still the same connection
@@ -355,7 +355,7 @@ func TestConnPool_Discard(t *testing.T) {
 	}
 
 	// Mark connection for discard
-	conn.(Conn).Discard()
+	conn.Discard()
 
 	// Close the connection (should NOT be put back to pool)
 	err = conn.Close()
@@ -398,7 +398,7 @@ func TestConnPool_RawConn(t *testing.T) {
 	}
 
 	// Get raw connection
-	rawConn := conn.(Conn).RawConn()
+	rawConn := conn.RawConn()
 	if rawConn == nil {
 		t.Fatal("RawConn returned nil")
 	}
@@ -441,14 +441,14 @@ func TestConnPool_RawConn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Dial failed: %v", err)
 		}
-		conn := conn2.(Conn).RawConn() // First call is fine
+		conn := conn2.RawConn() // First call is fine
 		defer conn.Close()
 		defer func() {
 			if r := recover(); r == nil {
 				t.Error("Expected RawConn to panic on second call, but it did not")
 			}
 		}()
-		conn2.(Conn).RawConn() // Second call should panic
+		conn2.RawConn() // Second call should panic
 	})
 	serverWG.Wait() // Wait for the second echo server if it was started
 }
@@ -486,7 +486,7 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialContext with priority failed: %v", err)
 	}
-	if conn2.(Conn).IsReuseConn() {
+	if conn2.IsReuseConn() {
 		t.Error("Expected new connection (priority), but IsReuseConn returned true")
 	}
 	if pool.ConnNum() != 2 { // Total connections should now be 2
@@ -820,7 +820,7 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 					if err != nil {
 						continue
 					}
-					conn := c1.(Conn)
+					conn := c1
 					_, err = conn.Write(testData)
 					if err != nil {
 						conn.Discard() // Mark bad connection
@@ -846,7 +846,7 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 						t.Errorf("Client %d: Dial failed: %v", clientID, err)
 						continue
 					}
-					conn := c1.(Conn)
+					conn := c1
 					conn.Discard() // Always discard this one
 					_, err = conn.Write(testData)
 					if err != nil {
@@ -862,7 +862,7 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 						t.Errorf("Client %d: Dial failed: %v", clientID, err)
 						continue
 					}
-					raw := c1.(Conn).RawConn() // Get raw connection
+					raw := c1.RawConn() // Get raw connection
 					_, err = raw.Write(testData)
 					if err != nil {
 						t.Errorf("Client %d: RawConn Write failed: %v", clientID, err)
@@ -954,7 +954,7 @@ func BenchmarkConnPool_DialRecycle(b *testing.B) {
 		if err != nil {
 			b.Fatalf("Dial failed: %v", err)
 		}
-		if !conn.(Conn).IsReuseConn() {
+		if !conn.IsReuseConn() {
 			b.Fatalf("Expected reused connection, got new on iteration %d", i)
 		}
 		conn.Close()

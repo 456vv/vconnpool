@@ -481,11 +481,11 @@ func (p *Pool) checkAndIncConnNum() error {
 	}
 }
 
-func (p *Pool) Dial(network, address string) (net.Conn, error) {
+func (p *Pool) Dial(network, address string) (Conn, error) {
 	return p.DialContext(context.Background(), network, address)
 }
 
-func (p *Pool) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, error) {
 	if p.closed.Load() {
 		return nil, ErrConnPoolClose
 	}
@@ -497,7 +497,7 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (net.Co
 	)
 
 	// 检查优先级模式
-	isPriority, _ := ctx.Value(PriorityContextKey).(bool)
+	isPriority, exist := ctx.Value(PriorityContextKey).(bool)
 
 	if !isPriority {
 		conn, err = p.getPoolConn(network, address)
@@ -506,12 +506,13 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (net.Co
 		}
 	}
 
-	if conn == nil {
+	// 设置优先级模式，创建连接。
+	if exist == isPriority && conn == nil {
 		// 池中无连接或强制新建
 		conn, err = p.dialNew(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	return &connSingle{

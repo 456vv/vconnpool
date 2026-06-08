@@ -55,14 +55,14 @@ func TestConnPool_Functional(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	if pool.ConnNum() != 1 {
-		t.Errorf("Expected 1 conn, got %d", pool.ConnNum())
+	if pool.Num() != 1 {
+		t.Errorf("Expected 1 conn, got %d", pool.Num())
 	}
 
 	// 关闭 c1，它应该进入空闲池
 	c1.Close()
-	if pool.ConnNumIdle(addr) != 1 {
-		t.Errorf("Expected 1 idle conn, got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 1 {
+		t.Errorf("Expected 1 idle conn, got %d", pool.NumIdle(addr))
 	}
 
 	// 再次 Dial，应该是复用的
@@ -94,7 +94,7 @@ func TestConnPool_Functional(t *testing.T) {
 	// 3. 测试 IdeConn (空闲上限)
 	// 虽然开了 5 个，但 IdeConn 是 2，关闭后池里应只有 2 个，其余 3 个应被物理关闭
 	time.Sleep(time.Millisecond * 100) // 等待异步回收完成
-	numIde := pool.ConnNumIdle(addr)
+	numIde := pool.NumIdle(addr)
 	if numIde != 2 {
 		t.Errorf("Idle connections %d did not match expected 2", numIde)
 	}
@@ -115,8 +115,8 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 	}
 
 	c.Discard()
-	c.Close() // 标记为 Discard 后，Close 不会放回池，且 ConnNum 应该减少
-	if pool.ConnNumIdle(addr) != 0 {
+	c.Close() // 标记为 Discard 后，Close 不会放回池，且 Num 应该减少
+	if pool.NumIdle(addr) != 0 {
 		t.Error("Discarded connection should not be in pool")
 	}
 
@@ -127,7 +127,7 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 		t.Fatal("RawConn returned nil")
 	}
 	defer raw.Close()
-	if pool.ConnNumIdle(addr) != 0 {
+	if pool.NumIdle(addr) != 0 {
 		t.Error("RawConn should not be in pool")
 	}
 	c2.Close()
@@ -187,8 +187,8 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 						pool.Put(c, a)
 					}
 				case 2: // 检查状态方法
-					pool.ConnNum()
-					pool.ConnNumIdle(&Addr{Net: "tcp", Name: addr})
+					pool.Num()
+					pool.NumIdle(&Addr{Net: "tcp", Name: addr})
 				case 3: // Discard 逻辑
 					c, err := pool.Dial("tcp", addr)
 					if err == nil {
@@ -207,10 +207,10 @@ func TestConnPool_Race_CrossCall(t *testing.T) {
 	}
 
 	wg.Wait()
-	t.Logf("Final ConnNum: %d", pool.ConnNum())
+	t.Logf("Final Num: %d", pool.Num())
 	pool.Close()
-	if pool.ConnNum() != 0 {
-		t.Errorf("Expected 0 connections after close, got %d", pool.ConnNum())
+	if pool.Num() != 0 {
+		t.Errorf("Expected 0 connections after close, got %d", pool.Num())
 	}
 }
 

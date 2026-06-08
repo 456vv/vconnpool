@@ -201,8 +201,8 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if conn.IsReuseConn() {
 			t.Error("Expected new connection, but IsReuseConn returned true")
 		}
-		if pool.ConnNum() != 1 {
-			t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
+		if pool.Num() != 1 {
+			t.Errorf("Expected Num 1, got %d", pool.Num())
 		}
 
 		// Use the connection
@@ -229,12 +229,12 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close failed: %v", err)
 		}
-		if pool.ConnNum() != 1 { // Connection is in idle pool, still counted
-			t.Errorf("Expected ConnNum 1 after close, got %d", pool.ConnNum())
+		if pool.Num() != 1 { // Connection is in idle pool, still counted
+			t.Errorf("Expected Num 1 after close, got %d", pool.Num())
 		}
 		addr := &Addr{Net: network, Name: targetAddr}
-		if pool.ConnNumIdle(addr) != 1 {
-			t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 1 {
+			t.Errorf("Expected 1 idle connection, got %d", pool.NumIdle(addr))
 		}
 	})
 
@@ -248,11 +248,11 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if !conn.IsReuseConn() {
 			t.Error("Expected reused connection, but IsReuseConn returned false")
 		}
-		if pool.ConnNum() != 1 { // Still the same connection
-			t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
+		if pool.Num() != 1 { // Still the same connection
+			t.Errorf("Expected Num 1, got %d", pool.Num())
 		}
-		if pool.ConnNumIdle(addr) != 0 { // Connection is now active, not idle
-			t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 0 { // Connection is now active, not idle
+			t.Errorf("Expected 0 idle connections, got %d", pool.NumIdle(addr))
 		}
 
 		// Close it again
@@ -260,8 +260,8 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close failed: %v", err)
 		}
-		if pool.ConnNumIdle(addr) != 1 {
-			t.Errorf("Expected 1 idle connection after reuse close, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 1 {
+			t.Errorf("Expected 1 idle connection after reuse close, got %d", pool.NumIdle(addr))
 		}
 	})
 
@@ -269,11 +269,11 @@ func TestConnPool_DialAndClose(t *testing.T) {
 		// Wait for the idle timeout to expire
 		time.Sleep(1500 * time.Millisecond) // Slightly longer than IdeTimeout
 
-		if pool.ConnNumIdle(addr) != 0 {
-			t.Errorf("Expected 0 idle connections after timeout, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 0 {
+			t.Errorf("Expected 0 idle connections after timeout, got %d", pool.NumIdle(addr))
 		}
-		if pool.ConnNum() != 0 {
-			t.Errorf("Expected ConnNum 0 after timeout, got %d", pool.ConnNum())
+		if pool.Num() != 0 {
+			t.Errorf("Expected Num 0 after timeout, got %d", pool.Num())
 		}
 	})
 
@@ -307,23 +307,23 @@ func TestConnPool_IdeConnLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial 2 failed: %v", err)
 	}
-	if pool.ConnNum() != 2 {
-		t.Errorf("Expected ConnNum 2, got %d", pool.ConnNum())
+	if pool.Num() != 2 {
+		t.Errorf("Expected Num 2, got %d", pool.Num())
 	}
 
 	// Close conn1 (should go to idle pool)
 	conn1.Close()
-	if pool.ConnNumIdle(addr) != 1 {
-		t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 1 {
+		t.Errorf("Expected 1 idle connection, got %d", pool.NumIdle(addr))
 	}
 
 	// Close conn2 (should be discarded due to IdeConn limit)
 	conn2.Close()
-	if pool.ConnNumIdle(addr) != 1 {
-		t.Errorf("Expected still 1 idle connection (conn2 discarded), got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 1 {
+		t.Errorf("Expected still 1 idle connection (conn2 discarded), got %d", pool.NumIdle(addr))
 	}
-	if pool.ConnNum() != 1 { // One was recycled, one discarded
-		t.Errorf("Expected ConnNum 1 (conn2 discarded), got %d", pool.ConnNum())
+	if pool.Num() != 1 { // One was recycled, one discarded
+		t.Errorf("Expected Num 1 (conn2 discarded), got %d", pool.Num())
 	}
 
 	serverWG.Wait()
@@ -350,8 +350,8 @@ func TestConnPool_Discard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	if pool.ConnNum() != 1 {
-		t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
+	if pool.Num() != 1 {
+		t.Errorf("Expected Num 1, got %d", pool.Num())
 	}
 
 	// Mark connection for discard
@@ -362,11 +362,11 @@ func TestConnPool_Discard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Close failed: %v", err)
 	}
-	if pool.ConnNum() != 0 { // Should be 0 because it was discarded
-		t.Errorf("Expected ConnNum 0 after discard and close, got %d", pool.ConnNum())
+	if pool.Num() != 0 { // Should be 0 because it was discarded
+		t.Errorf("Expected Num 0 after discard and close, got %d", pool.Num())
 	}
-	if pool.ConnNumIdle(addr) != 0 {
-		t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 0 {
+		t.Errorf("Expected 0 idle connections, got %d", pool.NumIdle(addr))
 	}
 
 	serverWG.Wait()
@@ -393,8 +393,8 @@ func TestConnPool_RawConn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dial failed: %v", err)
 	}
-	if pool.ConnNum() != 1 {
-		t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
+	if pool.Num() != 1 {
+		t.Errorf("Expected Num 1, got %d", pool.Num())
 	}
 
 	// Get raw connection
@@ -402,11 +402,11 @@ func TestConnPool_RawConn(t *testing.T) {
 	if rawConn == nil {
 		t.Fatal("RawConn returned nil")
 	}
-	if pool.ConnNum() != 0 { // Should be 0 because RawConn removes it from pool management
-		t.Errorf("Expected ConnNum 0 after RawConn, got %d", pool.ConnNum())
+	if pool.Num() != 0 { // Should be 0 because RawConn removes it from pool management
+		t.Errorf("Expected Num 0 after RawConn, got %d", pool.Num())
 	}
-	if pool.ConnNumIdle(addr) != 0 {
-		t.Errorf("Expected 0 idle connections, got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 0 {
+		t.Errorf("Expected 0 idle connections, got %d", pool.NumIdle(addr))
 	}
 
 	conn.Close()
@@ -476,9 +476,9 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 	}
 	conn1.Close() // Put to pool
 
-	// ConnNum should be 1, Ide is 1
-	if pool.ConnNum() != 1 || pool.ConnNumIdle(addr) != 1 {
-		t.Fatalf("Expected ConnNum 1 and Ide 1, got %d, %d", pool.ConnNum(), pool.ConnNumIdle(addr))
+	// Num should be 1, Ide is 1
+	if pool.Num() != 1 || pool.NumIdle(addr) != 1 {
+		t.Fatalf("Expected Num 1 and Ide 1, got %d, %d", pool.Num(), pool.NumIdle(addr))
 	}
 	// Dial with priority context: should ignore pool and create new connection
 	ctx := context.WithValue(context.Background(), PriorityContextKey, true)
@@ -489,19 +489,19 @@ func TestConnPool_DialContext_Priority(t *testing.T) {
 	if conn2.IsReuseConn() {
 		t.Error("Expected new connection (priority), but IsReuseConn returned true")
 	}
-	if pool.ConnNum() != 2 { // Total connections should now be 2
-		t.Errorf("Expected ConnNum 2, got %d", pool.ConnNum())
+	if pool.Num() != 2 { // Total connections should now be 2
+		t.Errorf("Expected Num 2, got %d", pool.Num())
 	}
-	if pool.ConnNumIdle(addr) != 1 { // Idle connection should still be 1 (the first one)
-		t.Errorf("Expected Ide 1, got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 1 { // Idle connection should still be 1 (the first one)
+		t.Errorf("Expected Ide 1, got %d", pool.NumIdle(addr))
 	}
 
 	conn2.Close() // Put to pool
-	if pool.ConnNum() != 2 {
-		t.Errorf("Expected ConnNum 2 after conn2 close, got %d", pool.ConnNum())
+	if pool.Num() != 2 {
+		t.Errorf("Expected Num 2 after conn2 close, got %d", pool.Num())
 	}
-	if pool.ConnNumIdle(addr) != 2 {
-		t.Errorf("Expected Ide 2, got %d", pool.ConnNumIdle(addr))
+	if pool.NumIdle(addr) != 2 {
+		t.Errorf("Expected Ide 2, got %d", pool.NumIdle(addr))
 	}
 
 	pool.CloseIdleConnections()
@@ -533,8 +533,8 @@ func TestConnPool_DialContext_Cancelled(t *testing.T) {
 	if !errors.Is(err, context.Canceled) && err.Error() != "context canceled" {
 		t.Errorf("Expected context.Canceled error, got %v", err)
 	}
-	if pool.ConnNum() != 0 {
-		t.Errorf("Expected ConnNum 0, got %d", pool.ConnNum())
+	if pool.Num() != 0 {
+		t.Errorf("Expected Num 0, got %d", pool.Num())
 	}
 }
 
@@ -560,19 +560,19 @@ func TestConnPool_Add_Put(t *testing.T) {
 			conn1.Close()
 			t.Fatalf("Add failed: %v", err)
 		}
-		if pool.ConnNum() != 1 {
-			t.Errorf("Expected ConnNum 1, got %d", pool.ConnNum())
+		if pool.Num() != 1 {
+			t.Errorf("Expected Num 1, got %d", pool.Num())
 		}
-		if pool.ConnNumIdle(mockAddr) != 1 {
-			t.Errorf("Expected 1 idle connection, got %d", pool.ConnNumIdle(mockAddr))
+		if pool.NumIdle(mockAddr) != 1 {
+			t.Errorf("Expected 1 idle connection, got %d", pool.NumIdle(mockAddr))
 		}
 
 		conn, err := pool.Get(mockAddr)
 		if err != nil {
 			t.Fatalf("Get after Add failed: %v", err)
 		}
-		if pool.ConnNumIdle(mockAddr) != 0 {
-			t.Errorf("Expected 0 idle connection after Get, got %d", pool.ConnNumIdle(mockAddr))
+		if pool.NumIdle(mockAddr) != 0 {
+			t.Errorf("Expected 0 idle connection after Get, got %d", pool.NumIdle(mockAddr))
 		}
 
 		err = pool.Put(conn, mockAddr)
@@ -580,8 +580,8 @@ func TestConnPool_Add_Put(t *testing.T) {
 			conn.Close()
 			t.Fatal(err)
 		}
-		if pool.ConnNumIdle(mockAddr) != 1 { // Should be returned to pool
-			t.Errorf("Expected 1 idle connection after Get and Close, got %d", pool.ConnNumIdle(mockAddr))
+		if pool.NumIdle(mockAddr) != 1 { // Should be returned to pool
+			t.Errorf("Expected 1 idle connection after Get and Close, got %d", pool.NumIdle(mockAddr))
 		}
 		pool.CloseIdleConnections()
 	})
@@ -633,8 +633,8 @@ func TestConnPool_Add_Put(t *testing.T) {
 		if err != nil {                      // The code handles ErrConnAlreadyExists gracefully by returning nil
 			t.Errorf("Expected nil error for duplicate put due to graceful handling, got %v", err)
 		}
-		if pool.ConnNumIdle(mockAddr) != 1 { // Should still be 1 idle conn
-			t.Errorf("Expected 1 idle conn after duplicate put, got %d", pool.ConnNumIdle(mockAddr))
+		if pool.NumIdle(mockAddr) != 1 { // Should still be 1 idle conn
+			t.Errorf("Expected 1 idle conn after duplicate put, got %d", pool.NumIdle(mockAddr))
 		}
 		pool.CloseIdleConnections()
 		serverWG.Wait()
@@ -676,11 +676,11 @@ func TestConnPool_Get(t *testing.T) {
 		if conn == nil {
 			t.Fatal("Got nil connection")
 		}
-		if pool.ConnNumIdle(addr) != 0 {
-			t.Errorf("Expected 0 idle connections after Get, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 0 {
+			t.Errorf("Expected 0 idle connections after Get, got %d", pool.NumIdle(addr))
 		}
-		if pool.ConnNum() != 0 { // Get removes it from pool's count, calling code should handle it.
-			t.Errorf("Expected ConnNum 0 after Get, got %d", pool.ConnNum())
+		if pool.Num() != 0 { // Get removes it from pool's count, calling code should handle it.
+			t.Errorf("Expected Num 0 after Get, got %d", pool.Num())
 		}
 		conn.Close() // Close the obtained conn
 		pool.CloseIdleConnections()
@@ -712,8 +712,8 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 		t.Fatalf("Dial failed: %v", err)
 	}
 	conn.Close() // Put it to pool
-	if pool.ConnNum() != 1 || pool.ConnNumIdle(addr) != 1 {
-		t.Fatalf("Pre-close: ConnNum %d, Ide %d", pool.ConnNum(), pool.ConnNumIdle(addr))
+	if pool.Num() != 1 || pool.NumIdle(addr) != 1 {
+		t.Fatalf("Pre-close: Num %d, Ide %d", pool.Num(), pool.NumIdle(addr))
 	}
 
 	t.Run("Close", func(t *testing.T) {
@@ -721,11 +721,11 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Close failed: %v", err)
 		}
-		if pool.ConnNum() != 0 {
-			t.Errorf("Expected ConnNum 0 after Close, got %d", pool.ConnNum())
+		if pool.Num() != 0 {
+			t.Errorf("Expected Num 0 after Close, got %d", pool.Num())
 		}
-		if pool.ConnNumIdle(addr) != 0 {
-			t.Errorf("Expected 0 idle connections after Close, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 0 {
+			t.Errorf("Expected 0 idle connections after Close, got %d", pool.NumIdle(addr))
 		}
 	})
 
@@ -738,17 +738,17 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 
 	t.Run("OperationsOnClosedPool", func(t *testing.T) {
 		_, err := pool.Dial(network, targetAddr)
-		if !errors.Is(err, ErrConnPoolClose) {
+		if !errors.Is(err, ErrConnPoolClosed) {
 			t.Errorf("Expected errorConnPoolClose on Dial, got %v", err)
 		}
 
 		_, err = pool.DialContext(context.Background(), network, targetAddr)
-		if !errors.Is(err, ErrConnPoolClose) {
+		if !errors.Is(err, ErrConnPoolClosed) {
 			t.Errorf("Expected errorConnPoolClose on DialContext, got %v", err)
 		}
 
 		_, err = pool.Get(newMockVConn1(network, targetAddr))
-		if !errors.Is(err, ErrConnPoolClose) {
+		if !errors.Is(err, ErrConnPoolClosed) {
 			t.Errorf("Expected errorConnPoolClose on Get, got %v", err)
 		}
 
@@ -758,15 +758,15 @@ func TestConnPool_CloseAndClosedState(t *testing.T) {
 		}
 
 		err = pool.Put(nil, newMockVConn1(network, targetAddr))
-		if !errors.Is(err, ErrConnPoolClose) {
+		if !errors.Is(err, ErrConnPoolClosed) {
 			t.Errorf("Expected errorConnPoolClose on Put, got %v", err)
 		}
 
-		if pool.ConnNum() != 0 { // Should still be 0
-			t.Errorf("ConnNum on closed pool expected 0, got %d", pool.ConnNum())
+		if pool.Num() != 0 { // Should still be 0
+			t.Errorf("Num on closed pool expected 0, got %d", pool.Num())
 		}
-		if pool.ConnNumIdle(addr) != 0 { // Should still be 0
-			t.Errorf("ConnNumIde on closed pool expected 0, got %d", pool.ConnNumIdle(addr))
+		if pool.NumIdle(addr) != 0 { // Should still be 0
+			t.Errorf("ConnNumIde on closed pool expected 0, got %d", pool.NumIdle(addr))
 		}
 	})
 	serverWG.Wait()
@@ -889,17 +889,17 @@ func TestConnPool_ConcurrentOperations(t *testing.T) {
 	poolClientWG.Wait()
 	time.Sleep(2 * time.Second)
 
-	t.Logf("Final ConnNum: %d", pool.ConnNum())
-	t.Logf("Final Idle ConnNum: %d", pool.ConnNumIdle(addr))
+	t.Logf("Final Num: %d", pool.Num())
+	t.Logf("Final Idle Num: %d", pool.NumIdle(addr))
 
 	// Basic assertion: no negative counts, no panics (checked by -race)
-	if pool.ConnNum() < 0 || pool.ConnNumIdle(addr) < 0 {
-		t.Errorf("Negative connection count: ConnNum %d, Idle %d", pool.ConnNum(), pool.ConnNumIdle(addr))
+	if pool.Num() < 0 || pool.NumIdle(addr) < 0 {
+		t.Errorf("Negative connection count: Num %d, Idle %d", pool.Num(), pool.NumIdle(addr))
 	}
 	// Expect some connections to remain idle or be cleaned up
 	// Exact count is hard to predict due to concurrency and timeouts, but should be reasonable.
-	if pool.ConnNum() > pool.MaxConn && pool.MaxConn > 0 {
-		t.Errorf("ConnNum (%d) exceeded MaxConn (%d)", pool.ConnNum(), pool.MaxConn)
+	if pool.Num() > pool.MaxConn && pool.MaxConn > 0 {
+		t.Errorf("Num (%d) exceeded MaxConn (%d)", pool.Num(), pool.MaxConn)
 	}
 
 	// Make sure all mock servers eventually close

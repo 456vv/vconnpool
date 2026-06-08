@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -16,7 +15,7 @@ import (
 
 var (
 	ErrConnClose         = errors.New("vconnpool: the connection is closed")
-	ErrConnPoolClose     = errors.New("vconnpool: the connection pool has been closed")
+	ErrConnPoolClosed    = errors.New("vconnpool: the connection pool has been closed")
 	ErrConnRAWRead       = errors.New("vconnpool: the original connection cannot be read repeatedly")
 	ErrConnNotAvailable  = errors.New("vconnpool: no available connection in the pool")
 	ErrConnPoolMax       = errors.New("vconnpool: the number of connections has reached the maximum limit")
@@ -50,6 +49,7 @@ type connSingle struct {
 	closed      atomic.Bool
 	discard     atomic.Bool
 	rawRead     atomic.Bool
+	activeOps   atomic.Int32
 }
 
 // --- connSingle 方法实现 ---
@@ -67,6 +67,14 @@ func (t *connSingle) Write(b []byte) (n int, err error) {
 		return 0, net.ErrClosed
 	}
 
+	t.activeOps.Add(1)
+	defer t.activeOps.Add(-1)
+
+	// Double check to handle race with Close
+	if t.closed.Load() {
+		return 0, net.ErrClosed
+	}
+
 	n, err = vc.Write(b)
 	t.errDiscardConnect(err)
 	return
@@ -76,11 +84,20 @@ func (t *connSingle) Read(b []byte) (n int, err error) {
 	if t.closed.Load() {
 		return 0, net.ErrClosed
 	}
+
 	t.mu.RLock()
 	vc := t.Conn
 	t.mu.RUnlock()
 
 	if vc == nil {
+		return 0, net.ErrClosed
+	}
+
+	t.activeOps.Add(1)
+	defer t.activeOps.Add(-1)
+
+	// Double check to handle race with Close
+	if t.closed.Load() {
 		return 0, net.ErrClosed
 	}
 
@@ -93,15 +110,11 @@ func (t *connSingle) errDiscardConnect(err error) {
 	if err == nil {
 		return
 	}
-	// 非超时类的网络错误，标记连接不可复用
-	if err == io.EOF || err == io.ErrUnexpectedEOF {
-		t.discard.Store(true)
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && !netErr.Timeout() {
-		t.discard.Store(true)
-	}
+	t.discard.Store(true)
 }
 
 func (t *connSingle) Close() error {
@@ -112,6 +125,11 @@ func (t *connSingle) Close() error {
 	// 原始连接已交出，池不再管理
 	if t.rawRead.Load() {
 		return nil
+	}
+
+	// 如果关闭时有并发的读写操作，必须强行关闭并丢弃连接
+	if t.activeOps.Load() > 0 {
+		t.discard.Store(true)
 	}
 
 	t.mu.Lock()
@@ -141,6 +159,7 @@ func (t *connSingle) Close() error {
 	// 物理关闭
 	if cp != nil {
 		cp.connNum.Add(-1)
+		cp.loadPool(addr).totalCount.Add(-1)
 	}
 	return conn.Close()
 }
@@ -195,12 +214,14 @@ func (t *connSingle) RawConn() net.Conn {
 	t.mu.Lock()
 	vc := t.Conn
 	cp := t.cp
+	addr := t.addr
 	t.Conn = nil
 	t.cp = nil
 	t.mu.Unlock()
 
 	if cp != nil {
 		cp.connNum.Add(-1)
+		cp.loadPool(addr).totalCount.Add(-1)
 	}
 	return vc.RawConn()
 }
@@ -214,10 +235,9 @@ type idleConn struct {
 }
 
 func (ic *idleConn) wait(timeout time.Duration) {
-	var timer *time.Timer
 	var timeoutC <-chan time.Time
 	if timeout > 0 {
-		timer = time.NewTimer(timeout)
+		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 		timeoutC = timer.C
 	}
@@ -233,16 +253,23 @@ func (ic *idleConn) wait(timeout time.Duration) {
 }
 
 type pools struct {
-	cp            *Pool
-	mu            sync.Mutex
-	idle          []*idleConn
-	present       map[net.Conn]struct{} // 用于 O(1) 查重
-	connExhausted map[int][]chan struct{}
-	connAvailable map[int][]chan struct{}
+	cp             *Pool
+	mu             sync.Mutex
+	idle           []*idleConn
+	present        map[net.Conn]struct{} // 用于 O(1) 查重
+	connExhausted  map[int][]chan struct{}
+	connAvailabled map[int][]chan struct{}
+	totalCount     atomic.Int32 // 该地址当前持有的总连接数（包含空闲和在用连接）
 }
 
 func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 	p.mu.Lock()
+
+	if p.cp.closed.Load() {
+		p.mu.Unlock()
+		return ErrConnPoolClosed
+	}
+
 	if p.present == nil {
 		p.present = make(map[net.Conn]struct{})
 	}
@@ -263,7 +290,8 @@ func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 	ic := &idleConn{conn: conn, vc: vc, pool: p}
 	p.idle = append(p.idle, ic)
 	p.present[conn] = struct{}{}
-	p.notifyConnAvailable()
+	l := len(p.idle)
+	p.notifyConnAvailabled(l)
 	p.mu.Unlock()
 
 	go ic.wait(timeout)
@@ -280,18 +308,18 @@ func (p *pools) get() (net.Conn, error) {
 		p.idle[n] = nil
 		p.idle = p.idle[:n]
 		delete(p.present, ic.conn)
+		p.checkConnExhausted(n)
 
 		// 检查连接是否依然健康
 		if !ic.vc.CancelNotify(vconn.ErrRawConnAlreadyUsed) {
 			ic.conn.Close()
 			p.cp.connNum.Add(-1)
+			p.totalCount.Add(-1)
 			continue
 		}
-		p.checkConnExhaust()
 		// 连接健康，返回给调用者
 		return ic.conn, nil
 	}
-	p.checkConnExhaust()
 	return nil, ErrConnNotAvailable
 }
 
@@ -299,6 +327,9 @@ func (p *pools) remove(ic *idleConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.present == nil {
+		return
+	}
 	if _, ok := p.present[ic.conn]; !ok {
 		return
 	}
@@ -313,48 +344,54 @@ func (p *pools) remove(ic *idleConn) {
 
 			ic.conn.Close()
 			p.cp.connNum.Add(-1)
+			p.totalCount.Add(-1)
 			break
 		}
 	}
-	p.checkConnExhaust()
+	p.checkConnExhausted(len(p.idle))
 }
 
-func (p *pools) waitConnAvailable(l int) <-chan struct{} {
+func (p *pools) waitConnAvailabled(l int) <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ch := make(chan struct{}, 1)
-	if len(p.idle) >= l {
-		p.notifyConnAvailable()
-		ch <- struct{}{}
+	if len(p.idle) >= l || p.cp.closed.Load() {
+		if !p.cp.closed.Load() {
+			ch <- struct{}{}
+		}
 		close(ch)
 		return ch
 	}
 
-	p.connAvailable[l] = append(p.connAvailable[l], ch)
+	p.connAvailabled[l] = append(p.connAvailabled[l], ch)
 	return ch
 }
 
-func (p *pools) notifyConnAvailable() {
-	l := len(p.idle)
-	for n, ca := range p.connAvailable {
-		if l >= n {
-			for _, ch := range ca {
-				ch <- struct{}{}
-				close(ch)
-			}
-			delete(p.connAvailable, n)
-		}
+func (p *pools) cleanNotifyConnAvailabled() {
+	for l := range p.connAvailabled {
+		p.notifyConnAvailabled(l)
 	}
 }
 
-func (p *pools) waitConnExhaust(l int) <-chan struct{} {
+func (p *pools) notifyConnAvailabled(l int) {
+	for _, ch := range p.connAvailabled[l] {
+		if !p.cp.closed.Load() {
+			ch <- struct{}{}
+		}
+		close(ch)
+	}
+	delete(p.connAvailabled, l)
+}
+
+func (p *pools) waitConnExhausted(l int) <-chan struct{} {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	ch := make(chan struct{}, 1)
 
-	if len(p.idle) <= l {
-		p.checkConnExhaust()
-		ch <- struct{}{}
+	if len(p.idle) <= l || p.cp.closed.Load() {
+		if !p.cp.closed.Load() {
+			ch <- struct{}{}
+		}
 		close(ch)
 		return ch
 	}
@@ -363,17 +400,44 @@ func (p *pools) waitConnExhaust(l int) <-chan struct{} {
 	return ch
 }
 
-func (p *pools) checkConnExhaust() {
-	l := len(p.idle)
-	for n, ce := range p.connExhausted {
-		if l <= n {
-			for _, ch := range ce {
-				ch <- struct{}{}
-				close(ch)
-			}
-			delete(p.connExhausted, n)
+func (p *pools) checkConnExhausted(l int) {
+	for _, ch := range p.connExhausted[l] {
+		if !p.cp.closed.Load() {
+			ch <- struct{}{}
 		}
+		close(ch)
 	}
+	delete(p.connExhausted, l)
+}
+
+func (p *pools) cleanCheckConnExhausted() {
+	for l := range p.connExhausted {
+		p.checkConnExhausted(l)
+	}
+}
+
+func (p *pools) clean() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	for _, ic := range p.idle {
+		ic.vc.CancelNotify(net.ErrClosed)
+		ic.conn.Close()
+	}
+
+	p.cp.connNum.Add(-int32(len(p.idle)))
+	p.totalCount.Add(-int32(len(p.idle)))
+
+	// 如果是池关闭了，关闭接收者
+	if p.cp.closed.Load() {
+		p.cleanNotifyConnAvailabled()
+	}
+
+	// 告诉接收者，连接全部关闭
+	p.cleanCheckConnExhausted()
+
+	p.idle = nil
+	p.present = nil
 }
 
 // --- ConnPool 主体 ---
@@ -391,9 +455,9 @@ type Pool struct {
 	MaxConn     int
 
 	connNum atomic.Int32
-	conns   sync.Map // 使用 sync.Map 优化读性能
+	conns   map[string]*pools // 采用标准 Map + 细粒度 RWMutex 优化并发读写性能
 	closed  atomic.Bool
-	mu      sync.Mutex
+	mu      sync.RWMutex
 }
 
 func addrKey(network, address string) string {
@@ -402,52 +466,85 @@ func addrKey(network, address string) string {
 
 func (p *Pool) loadPool(addr net.Addr) *pools {
 	key := addrKey(addr.Network(), addr.String())
-	v, _ := p.conns.LoadOrStore(key, &pools{
-		cp:            p,
-		present:       make(map[net.Conn]struct{}),
-		connExhausted: make(map[int][]chan struct{}),
-		connAvailable: make(map[int][]chan struct{}),
-	})
-	ps := v.(*pools)
+	p.mu.RLock()
+	ps, ok := p.conns[key]
+	p.mu.RUnlock()
+	if ok {
+		return ps
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conns == nil {
+		p.conns = make(map[string]*pools)
+	}
+	ps, ok = p.conns[key]
+	if !ok {
+		ps = &pools{
+			cp:             p,
+			present:        make(map[net.Conn]struct{}),
+			connExhausted:  make(map[int][]chan struct{}),
+			connAvailabled: make(map[int][]chan struct{}),
+		}
+		p.conns[key] = ps
+	}
 	return ps
 }
 
-func (p *Pool) WaitConnAvailable(addr net.Addr, l int) <-chan struct{} {
-	return p.loadPool(addr).waitConnAvailable(l)
+func (p *Pool) WaitConnAvailabled(addr net.Addr, l int) <-chan struct{} {
+	return p.loadPool(addr).waitConnAvailabled(l)
 }
 
-func (p *Pool) WaitConnExhaust(addr net.Addr, l int) <-chan struct{} {
-	return p.loadPool(addr).waitConnExhaust(l)
+func (p *Pool) WaitConnExhausted(addr net.Addr, l int) <-chan struct{} {
+	return p.loadPool(addr).waitConnExhausted(l)
 }
 
 func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
 	key := addrKey(network, address)
-	v, ok := p.conns.Load(key)
+	p.mu.RLock()
+	ps, ok := p.conns[key]
+	p.mu.RUnlock()
 	if !ok {
 		return nil, ErrConnNotAvailable
 	}
 
-	ps := v.(*pools)
 	conn, err := ps.get()
-	// 动态清理不再使用的 pool 对象
+	// 动态清理不再使用的 pool 结构体，保证安全且防止泄露
 	if err != nil {
+		p.mu.Lock()
 		ps.mu.Lock()
-		if len(ps.idle) == 0 && ps.connAvailable == nil {
-			p.conns.Delete(key)
+		if len(ps.idle) == 0 && len(ps.connAvailabled) == 0 && len(ps.connExhausted) == 0 {
+			if p.conns[key] == ps {
+				delete(p.conns, key)
+			}
 		}
 		ps.mu.Unlock()
+		p.mu.Unlock()
 	}
 	return conn, err
 }
 
 func (p *Pool) getPoolConnCount(network, address string) int {
 	key := addrKey(network, address)
-	v, ok := p.conns.Load(key)
+	p.mu.RLock()
+	ps, ok := p.conns[key]
+	p.mu.RUnlock()
 	if !ok {
 		return 0
 	}
 
-	ps := v.(*pools)
+	return int(ps.totalCount.Load())
+}
+
+func (p *Pool) getIdleConnCount(network, address string) int {
+	key := addrKey(network, address)
+	p.mu.RLock()
+	ps, ok := p.conns[key]
+	p.mu.RUnlock()
+	if !ok {
+		return 0
+	}
+
 	ps.mu.Lock()
 	count := len(ps.idle)
 	ps.mu.Unlock()
@@ -458,8 +555,9 @@ func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil conn or addr")
 	}
+
 	if p.closed.Load() {
-		return ErrConnPoolClose
+		return ErrConnPoolClosed
 	}
 
 	return p.loadPool(addr).put(conn, p.IdleTimeout)
@@ -487,7 +585,7 @@ func (p *Pool) Dial(network, address string) (Conn, error) {
 
 func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, error) {
 	if p.closed.Load() {
-		return nil, ErrConnPoolClose
+		return nil, ErrConnPoolClosed
 	}
 
 	var (
@@ -502,6 +600,14 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	if !isPriority {
 		conn, err = p.getPoolConn(network, address)
 		if err == nil {
+			if ctx.Err() != nil {
+				if err := p.putPoolConn(conn, &Addr{Net: network, Name: address}); err != nil {
+					if !errors.Is(err, ErrConnAlreadyExists) {
+						conn.Close()
+					}
+				}
+				return nil, ctx.Err()
+			}
 			pool = true
 		}
 	}
@@ -557,13 +663,15 @@ func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, 
 		p.connNum.Add(-1)
 		return nil, err
 	}
+
+	p.loadPool(addr).totalCount.Add(1)
 	return conn, nil
 }
 
 // Get 从连接池获取指定地址的连接（不创建新连接）
 func (p *Pool) Get(addr net.Addr) (conn net.Conn, err error) {
 	if p.closed.Load() {
-		return nil, ErrConnPoolClose
+		return nil, ErrConnPoolClosed
 	}
 
 	if addr == nil {
@@ -577,6 +685,7 @@ func (p *Pool) Get(addr net.Addr) (conn net.Conn, err error) {
 
 	// 连接所有权转移给调用者，减少计数
 	p.connNum.Add(-1)
+	p.loadPool(addr).totalCount.Add(-1)
 	return conn, nil
 }
 
@@ -589,7 +698,7 @@ func (p *Pool) Add(conn net.Conn) error {
 
 func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 	if p.closed.Load() {
-		return ErrConnPoolClose
+		return ErrConnPoolClosed
 	}
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil parameters")
@@ -607,8 +716,13 @@ func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 	if vc, ok := conn.(*vconn.Conn); ok {
 		conn = vc.RawConn()
 	}
+
+	ps := p.loadPool(addr)
+	ps.totalCount.Add(1)
+
 	if err := p.putPoolConn(conn, addr); err != nil {
 		p.connNum.Add(-1)
+		ps.totalCount.Add(-1)
 		if errors.Is(err, ErrConnAlreadyExists) {
 			return nil
 		}
@@ -620,52 +734,46 @@ func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 // CloseIdleConnection 关闭空闲连接池
 func (p *Pool) CloseIdleConnection(addr net.Addr) {
 	key := addrKey(addr.Network(), addr.String())
-	v, ok := p.conns.Load(key)
-	if !ok {
-		return
+	p.mu.RLock()
+	ps, ok := p.conns[key]
+	p.mu.RUnlock()
+	if ok {
+		ps.clean()
 	}
-
-	ps := v.(*pools)
-	p.closeIdleConnection(ps)
 }
 
 func (p *Pool) CloseIdleConnections() {
-	p.conns.Range(func(key, value interface{}) bool {
-		ps := value.(*pools)
-		p.closeIdleConnection(ps)
-		return true
-	})
-}
-
-func (p *Pool) closeIdleConnection(ps *pools) {
-	ps.mu.Lock()
-	for _, ic := range ps.idle {
-		ic.vc.CancelNotify(net.ErrClosed)
-		ic.conn.Close()
-		p.connNum.Add(-1)
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, ps := range p.conns {
+		ps.clean()
 	}
-	ps.idle = nil
-	ps.present = nil
-	ps.checkConnExhaust()
-	ps.mu.Unlock()
 }
 
 func (p *Pool) Close() error {
 	if p.closed.Swap(true) {
 		return nil
 	}
-
 	p.CloseIdleConnections()
 	p.connNum.Store(0)
 	return nil
 }
 
-func (p *Pool) ConnNum() int {
+func (p *Pool) Num() int {
 	return int(p.connNum.Load())
 }
 
-// ConnNumIdle 当前空闲连接数量
-func (p *Pool) ConnNumIdle(addr net.Addr) int {
+// NumIdle 当前空闲连接数量
+func (p *Pool) NumIdle(addr net.Addr) int {
+	if p.closed.Load() {
+		return 0
+	}
+
+	return p.getIdleConnCount(addr.Network(), addr.String())
+}
+
+// NumConn 当前地址连接数量
+func (p *Pool) NumConn(addr net.Addr) int {
 	if p.closed.Load() {
 		return 0
 	}

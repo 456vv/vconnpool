@@ -257,8 +257,8 @@ type pools struct {
 	mu             sync.Mutex
 	idle           []*idleConn
 	present        map[net.Conn]struct{} // 用于 O(1) 查重
-	connExhausted  map[int][]chan struct{}
-	connAvailabled map[int][]chan struct{}
+	connExhausted  map[int][]chan bool
+	connAvailabled map[int][]chan bool
 	totalCount     atomic.Int32 // 该地址当前持有的总连接数（包含空闲和在用连接）
 }
 
@@ -351,15 +351,12 @@ func (p *pools) remove(ic *idleConn) {
 	p.checkConnExhausted(len(p.idle))
 }
 
-func (p *pools) waitConnAvailabled(l int) <-chan struct{} {
+func (p *pools) waitConnAvailabled(l int) <-chan bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ch := make(chan struct{}, 1)
+	ch := make(chan bool, 1)
 	if len(p.idle) >= l || p.cp.closed.Load() {
-		if !p.cp.closed.Load() {
-			ch <- struct{}{}
-		}
-		close(ch)
+		ch <- !p.cp.closed.Load()
 		return ch
 	}
 
@@ -375,24 +372,18 @@ func (p *pools) cleanNotifyConnAvailabled() {
 
 func (p *pools) notifyConnAvailabled(l int) {
 	for _, ch := range p.connAvailabled[l] {
-		if !p.cp.closed.Load() {
-			ch <- struct{}{}
-		}
-		close(ch)
+		ch <- !p.cp.closed.Load()
 	}
 	delete(p.connAvailabled, l)
 }
 
-func (p *pools) waitConnExhausted(l int) <-chan struct{} {
+func (p *pools) waitConnExhausted(l int) <-chan bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	ch := make(chan struct{}, 1)
+	ch := make(chan bool, 1)
 
 	if len(p.idle) <= l || p.cp.closed.Load() {
-		if !p.cp.closed.Load() {
-			ch <- struct{}{}
-		}
-		close(ch)
+		ch <- !p.cp.closed.Load()
 		return ch
 	}
 
@@ -402,10 +393,7 @@ func (p *pools) waitConnExhausted(l int) <-chan struct{} {
 
 func (p *pools) checkConnExhausted(l int) {
 	for _, ch := range p.connExhausted[l] {
-		if !p.cp.closed.Load() {
-			ch <- struct{}{}
-		}
-		close(ch)
+		ch <- !p.cp.closed.Load()
 	}
 	delete(p.connExhausted, l)
 }
@@ -483,19 +471,19 @@ func (p *Pool) loadPool(addr net.Addr) *pools {
 		ps = &pools{
 			cp:             p,
 			present:        make(map[net.Conn]struct{}),
-			connExhausted:  make(map[int][]chan struct{}),
-			connAvailabled: make(map[int][]chan struct{}),
+			connExhausted:  make(map[int][]chan bool),
+			connAvailabled: make(map[int][]chan bool),
 		}
 		p.conns[key] = ps
 	}
 	return ps
 }
 
-func (p *Pool) WaitConnAvailabled(addr net.Addr, l int) <-chan struct{} {
+func (p *Pool) WaitConnAvailabled(addr net.Addr, l int) <-chan bool {
 	return p.loadPool(addr).waitConnAvailabled(l)
 }
 
-func (p *Pool) WaitConnExhausted(addr net.Addr, l int) <-chan struct{} {
+func (p *Pool) WaitConnExhausted(addr net.Addr, l int) <-chan bool {
 	return p.loadPool(addr).waitConnExhausted(l)
 }
 

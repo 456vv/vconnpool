@@ -625,18 +625,13 @@ func TestConnSingle_Discard(t *testing.T) {
 	cs.Conn = vconn.New(mockConn1)
 	cs.mu.Unlock()
 
-	// 标记为废弃
-	err := cs.Discard()
-	if err != nil {
-		t.Errorf("Discard failed: %v", err)
-	}
-
+	cs.Discard()
 	if !cs.discard.Load() {
 		t.Error("Connection not marked as discarded")
 	}
 
 	// 关闭连接，应该不会回收到池中
-	err = cs.Close()
+	err := cs.Close()
 	if err != nil {
 		t.Errorf("Close failed: %v", err)
 	}

@@ -32,7 +32,7 @@ type Dialer interface {
 // Conn 对外暴露的连接接口
 type Conn interface {
 	net.Conn
-	Discard() error
+	Discard() net.Conn
 	IsReuseConn() bool
 	RawConn() net.Conn
 }
@@ -194,9 +194,9 @@ func (t *connSingle) SetWriteDeadline(tm time.Time) error {
 	return t.Conn.SetWriteDeadline(tm)
 }
 
-func (t *connSingle) Discard() error {
+func (t *connSingle) Discard() net.Conn {
 	t.discard.Store(true)
-	return nil
+	return t
 }
 
 func (t *connSingle) IsReuseConn() bool {

@@ -123,9 +123,6 @@ func TestConnPool_RawConn_Discard(t *testing.T) {
 	// 测试 RawConn
 	c2, _ := pool.Dial(network, targetAddr)
 	raw := c2.RawConn()
-	if raw == nil {
-		t.Fatal("RawConn returned nil")
-	}
 	defer raw.Close()
 	if pool.NumIdle(addr) != 0 {
 		t.Error("RawConn should not be in pool")

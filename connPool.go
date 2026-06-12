@@ -663,15 +663,7 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 		pool bool // 标记连接是否来自连接池
 	)
 
-	// 检查优先级模式：如果 context 中设置了 PriorityContextKey 且为 true，则强制新建连接
-	isPriority := false
-	if val := ctx.Value(PriorityContextKey); val != nil {
-		if b, ok := val.(bool); ok && b {
-			isPriority = true
-		}
-	}
-
-	// 如果不是强制新建，则尝试从池中获取
+	isPriority, exist := ctx.Value(PriorityContextKey).(bool)
 	if !isPriority {
 		conn, err = p.getPoolConn(network, address)
 		if err == nil {
@@ -689,12 +681,12 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 		}
 	}
 
-	// 如果 conn 为 nil (池中无连接或强制新建模式)，则新建连接
-	if conn == nil {
+	// 设置优先级模式，创建连接。
+	if exist == isPriority && conn == nil {
 		conn, err = p.dialNew(ctx, network, address)
-		if err != nil {
-			return nil, err
-		}
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	// 构建 connSingle 包装器

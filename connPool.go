@@ -472,18 +472,16 @@ func (p *pools) clean() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.idle == nil { // 避免重复清理
-		return
-	}
-	for _, ic := range p.idle {
-		ic.vc.CancelNotify(net.ErrClosed)
-		ic.conn.Close()
-		l := p.connTotalCount.Add(-1)
-		p.leqConnNumNotify(int(l))
-	}
+	if p.idle != nil { // 避免重复清理
+		for _, ic := range p.idle {
+			ic.vc.CancelNotify(net.ErrClosed)
+			ic.conn.Close()
+			l := p.connTotalCount.Add(-1)
+			p.leqConnNumNotify(int(l))
+		}
 
-	p.cp.connNum.Add(-int64(len(p.idle)))
-
+		p.cp.connNum.Add(-int64(len(p.idle)))
+	}
 	// 如果是池关闭了，关闭接收者
 	if p.cp.closed.Load() {
 		p.geqConnIdleClean()

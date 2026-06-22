@@ -752,12 +752,13 @@ func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, 
 	return conn, nil
 }
 
-// Get 从连接池获取指定地址的连接（不创建新连接）
+// Get 从连接池获取指定地址的连接
 func (p *Pool) Get(addr net.Addr) (net.Conn, error) {
 	conn, _, err := p.GetFull(addr)
 	return conn, err
 }
 
+// GetFull 从连接池获取指定地址的连接，如果在空闲时收到对端发来的数据，会一并返回给调用者
 func (p *Pool) GetFull(addr net.Addr) (conn net.Conn, b []byte, err error) {
 	if p.closed.Load() {
 		return nil, nil, ErrConnPoolClosed
@@ -778,17 +779,17 @@ func (p *Pool) GetFull(addr net.Addr) (conn net.Conn, b []byte, err error) {
 	return conn, b, nil
 }
 
+// Add 适合存放客户端发起的连接
 func (p *Pool) Add(conn net.Conn) error {
-	if conn == nil {
-		return errors.New("vconnpool: cannot add nil connection")
-	}
 	return p.Put(conn, conn.RemoteAddr())
 }
 
+// Put 适合存放客户端发起的连接,支持指定的地址
 func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
-	return p.PutFull(conn, addr, -1, 0)
+	return p.PutFull(conn, addr, p.IdleTimeout, 0)
 }
 
+// PutFull 适合存放客户端/服务端的连接，支持指定地址、超时和缓存大小
 func (p *Pool) PutFull(conn net.Conn, addr net.Addr, timeout time.Duration, bs int) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil parameters")

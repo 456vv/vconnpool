@@ -296,7 +296,7 @@ func (p *pools) get() (net.Conn, error) {
 		// 检查连接是否依然健康，或者vconn是否已将底层连接移交
 		if !ic.vc.CancelNotify(vconn.ErrRawConnAlreadyUsed) {
 			// 连接不健康或底层连接已不再被vconn管理，关闭并移除
-			ic.conn.Close()
+			ic.vc.Close()
 			p.cp.connNum.Add(-1)          // 减少全局总连接数
 			l := p.connTotalCount.Add(-1) // 减少该地址的总连接数
 			p.leqConnNumNotify(int(l))    // 通知该地址连接数变化
@@ -327,7 +327,7 @@ func (p *pools) remove(ic *idleConn) {
 			p.idle = p.idle[:len(p.idle)-1]
 			delete(p.present, ic.conn)
 
-			ic.conn.Close()
+			ic.vc.Close()
 			p.cp.connNum.Add(-1)          // 减少全局总连接数
 			l := p.connTotalCount.Add(-1) // 减少该地址的总连接数
 			p.leqConnNumNotify(int(l))    // 通知该地址连接数变化

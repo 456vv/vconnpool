@@ -132,7 +132,7 @@ func (t *connSingle) Close() error {
 
 	// 尝试归还连接池
 	if !t.discard.Load() && cp != nil {
-		err := cp.putPoolConn(conn, addr, cp.IdleTimeout)
+		err := cp.putPoolConn(conn, addr, cp.IdleTimeout, 0)
 		if err == nil || errors.Is(err, ErrConnAlreadyExists) {
 			return nil // 成功归还或连接已存在（视为成功归还，池已持有）
 		}
@@ -246,7 +246,7 @@ type pools struct {
 	connTotalCount atomic.Int64 // 该地址当前持有的总连接数（包含空闲和在用连接）
 }
 
-func (p *pools) put(conn net.Conn, timeout time.Duration) error {
+func (p *pools) put(conn net.Conn, timeout time.Duration, bs int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -268,7 +268,11 @@ func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 	}
 
 	vc := vconn.New(conn)
-	vc.SetBackgroundReadDiscard(true)
+	if bs > 0 {
+		vc.SetBackgroundReadBuffer(bs)
+	} else if bs < 0 {
+		vc.SetBackgroundReadDiscard(true)
+	}
 
 	ic := &idleConn{conn: conn, vc: vc, pool: p}
 	p.idle = append(p.idle, ic)
@@ -283,7 +287,7 @@ func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 	return nil
 }
 
-func (p *pools) get() (net.Conn, error) {
+func (p *pools) get() (net.Conn, []byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -305,9 +309,10 @@ func (p *pools) get() (net.Conn, error) {
 			continue                      // 继续尝试获取下一个连接
 		}
 		// 连接健康，返回给调用者
-		return ic.conn, nil
+		conn, b := ic.vc.RawConnFull()
+		return conn, b, nil
 	}
-	return nil, ErrConnNotAvailable
+	return nil, nil, ErrConnNotAvailable
 }
 
 func (p *pools) remove(ic *idleConn) {
@@ -579,13 +584,13 @@ func (p *Pool) WaitConnIdleLeq(addr net.Addr, l int) <-chan bool {
 	return p.loadPool(addr).leqConnIdleWait(l)
 }
 
-func (p *Pool) getPoolConn(network, address string) (net.Conn, error) {
+func (p *Pool) getPoolConn(network, address string) (net.Conn, []byte, error) {
 	key := addrKey(network, address)
 	p.mu.RLock()
 	ps, ok := p.conns[key]
 	p.mu.RUnlock()
 	if !ok {
-		return nil, ErrConnNotAvailable
+		return nil, nil, ErrConnNotAvailable
 	}
 
 	return ps.get()
@@ -617,7 +622,7 @@ func (p *Pool) getIdleConnCount(network, address string) int {
 	return count
 }
 
-func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr, timeout time.Duration) error {
+func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr, timeout time.Duration, bs int) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil conn or addr")
 	}
@@ -626,7 +631,7 @@ func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr, timeout time.Duration) 
 		conn.Close() // 池已关闭，直接关闭连接
 		return ErrConnPoolClosed
 	}
-	return p.loadPool(addr).put(conn, timeout)
+	return p.loadPool(addr).put(conn, timeout, bs)
 }
 
 func (p *Pool) checkAndIncConnNum() error {
@@ -658,13 +663,14 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 
 	var (
 		conn net.Conn
+		b    []byte
 		err  error
 		pool bool // 标记连接是否来自连接池
 	)
 
 	isPriority, exist := ctx.Value(PriorityContextKey).(bool)
 	if !isPriority {
-		conn, err = p.getPoolConn(network, address)
+		conn, b, err = p.getPoolConn(network, address)
 		if err == nil {
 			// 成功从池中获取连接
 			if ctx.Err() != nil {
@@ -700,7 +706,7 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	p.mu.Unlock()
 
 	return &connSingle{
-		Conn:   vconn.New(conn),
+		Conn:   vconn.NewData(conn, b),
 		cp:     p,
 		isPool: pool,
 		addr:   addr,
@@ -747,24 +753,29 @@ func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, 
 }
 
 // Get 从连接池获取指定地址的连接（不创建新连接）
-func (p *Pool) Get(addr net.Addr) (conn net.Conn, err error) {
+func (p *Pool) Get(addr net.Addr) (net.Conn, error) {
+	conn, _, err := p.GetFull(addr)
+	return conn, err
+}
+
+func (p *Pool) GetFull(addr net.Addr) (conn net.Conn, b []byte, err error) {
 	if p.closed.Load() {
-		return nil, ErrConnPoolClosed
+		return nil, nil, ErrConnPoolClosed
 	}
 
 	if addr == nil {
-		return nil, errors.New("vconnpool: address cannot be nil")
+		return nil, nil, errors.New("vconnpool: address cannot be nil")
 	}
 
-	conn, err = p.getPoolConn(addr.Network(), addr.String())
+	conn, b, err = p.getPoolConn(addr.Network(), addr.String())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// 连接所有权转移给调用者，减少全局连接计数 (connNum)
 	p.connNum.Add(-1)
 	p.loadPool(addr).connTotalCountAdd(-1)
-	return conn, nil
+	return conn, b, nil
 }
 
 func (p *Pool) Add(conn net.Conn) error {
@@ -775,10 +786,10 @@ func (p *Pool) Add(conn net.Conn) error {
 }
 
 func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
-	return p.PutTimeout(conn, addr, p.IdleTimeout)
+	return p.PutFull(conn, addr, -1, 0)
 }
 
-func (p *Pool) PutTimeout(conn net.Conn, addr net.Addr, timeout time.Duration) error {
+func (p *Pool) PutFull(conn net.Conn, addr net.Addr, timeout time.Duration, bs int) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil parameters")
 	}
@@ -802,7 +813,7 @@ func (p *Pool) PutTimeout(conn net.Conn, addr net.Addr, timeout time.Duration) e
 		conn = vc.RawConn()
 	}
 
-	if err := p.putPoolConn(conn, addr, timeout); err != nil {
+	if err := p.putPoolConn(conn, addr, timeout, bs); err != nil {
 		p.connNum.Add(-1)
 		if errors.Is(err, ErrConnAlreadyExists) {
 			return nil

@@ -132,7 +132,7 @@ func (t *connSingle) Close() error {
 
 	// 尝试归还连接池
 	if !t.discard.Load() && cp != nil {
-		err := cp.putPoolConn(conn, addr)
+		err := cp.putPoolConn(conn, addr, cp.IdleTimeout)
 		if err == nil || errors.Is(err, ErrConnAlreadyExists) {
 			return nil // 成功归还或连接已存在（视为成功归还，池已持有）
 		}
@@ -277,7 +277,9 @@ func (p *pools) put(conn net.Conn, timeout time.Duration) error {
 	l := len(p.idle)
 	p.geqConnIdleNotify(l) // 通知等待空闲连接数达到阈值的goroutine
 
-	go ic.wait(timeout) // 启动连接超时/关闭监听
+	if timeout >= 0 {
+		go ic.wait(timeout) // 启动连接超时/关闭监听
+	}
 	return nil
 }
 
@@ -615,7 +617,7 @@ func (p *Pool) getIdleConnCount(network, address string) int {
 	return count
 }
 
-func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr) error {
+func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr, timeout time.Duration) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil conn or addr")
 	}
@@ -624,8 +626,7 @@ func (p *Pool) putPoolConn(conn net.Conn, addr net.Addr) error {
 		conn.Close() // 池已关闭，直接关闭连接
 		return ErrConnPoolClosed
 	}
-
-	return p.loadPool(addr).put(conn, p.IdleTimeout)
+	return p.loadPool(addr).put(conn, timeout)
 }
 
 func (p *Pool) checkAndIncConnNum() error {
@@ -666,13 +667,9 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 		conn, err = p.getPoolConn(network, address)
 		if err == nil {
 			// 成功从池中获取连接
-			if ctx.Err() != nil { // 如果Context已取消，则立即关闭获取到的连接并返回Context错误
-				// 尝试归还连接，归还失败则关闭
-				if err := p.putPoolConn(conn, &Addr{Net: network, Name: address}); err != nil {
-					if !errors.Is(err, ErrConnAlreadyExists) {
-						conn.Close()
-					}
-				}
+			if ctx.Err() != nil {
+				// 如果Context已取消，则立即关闭获取到的连接并返回Context错误
+				conn.Close()
 				return nil, ctx.Err()
 			}
 			pool = true
@@ -778,6 +775,10 @@ func (p *Pool) Add(conn net.Conn) error {
 }
 
 func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
+	return p.PutTimeout(conn, addr, p.IdleTimeout)
+}
+
+func (p *Pool) PutTimeout(conn net.Conn, addr net.Addr, timeout time.Duration) error {
 	if conn == nil || addr == nil {
 		return errors.New("vconnpool: nil parameters")
 	}
@@ -801,7 +802,7 @@ func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
 		conn = vc.RawConn()
 	}
 
-	if err := p.putPoolConn(conn, addr); err != nil {
+	if err := p.putPoolConn(conn, addr, timeout); err != nil {
 		p.connNum.Add(-1)
 		if errors.Is(err, ErrConnAlreadyExists) {
 			return nil

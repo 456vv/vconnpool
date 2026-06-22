@@ -46,6 +46,7 @@ type connSingle struct {
 	laddr        net.Addr
 	raddr        net.Addr
 	isPool       bool
+	bufSize      int
 	closed       atomic.Bool // true表示这个connSingle包装器已失效
 	discard      atomic.Bool // true表示底层连接不应被复用
 	rawConnMoved atomic.Bool // true表示原始net.Conn已通过RawConn()方法移交
@@ -94,6 +95,9 @@ func (t *connSingle) Read(b []byte) (n int, err error) {
 
 	n, err = vc.Read(b)
 	t.errDiscardConnect(err)
+	if t.bufSize > 0 {
+		t.bufSize -= n
+	}
 	return
 }
 
@@ -131,7 +135,7 @@ func (t *connSingle) Close() error {
 	t.mu.Unlock()
 
 	// 尝试归还连接池
-	if !t.discard.Load() && cp != nil {
+	if !t.discard.Load() && cp != nil && t.bufSize <= 0 {
 		err := cp.putPoolConn(conn, addr, cp.IdleTimeout, 0)
 		if err == nil || errors.Is(err, ErrConnAlreadyExists) {
 			return nil // 成功归还或连接已存在（视为成功归还，池已持有）
@@ -706,12 +710,13 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	p.mu.Unlock()
 
 	return &connSingle{
-		Conn:   vconn.NewData(conn, b),
-		cp:     p,
-		isPool: pool,
-		addr:   addr,
-		laddr:  conn.LocalAddr(),
-		raddr:  conn.RemoteAddr(),
+		bufSize: len(b),
+		Conn:    vconn.NewData(conn, b),
+		cp:      p,
+		isPool:  pool,
+		addr:    addr,
+		laddr:   conn.LocalAddr(),
+		raddr:   conn.RemoteAddr(),
 	}, nil
 }
 

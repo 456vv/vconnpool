@@ -781,6 +781,9 @@ func (p *Pool) GetFull(addr net.Addr) (conn net.Conn, b []byte, err error) {
 
 // Add 适合存放客户端发起的连接
 func (p *Pool) Add(conn net.Conn) error {
+	if conn == nil {
+		return errors.New("vconnpool: cannot add nil connection")
+	}
 	return p.Put(conn, conn.RemoteAddr())
 }
 

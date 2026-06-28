@@ -272,11 +272,7 @@ func (p *pools) put(conn net.Conn, timeout time.Duration, bs int) error {
 	}
 
 	vc := vconn.New(conn)
-	if bs > 0 {
-		vc.SetBackgroundReadBuffer(bs)
-	} else if bs < 0 {
-		vc.SetBackgroundReadDiscard(true)
-	}
+	vc.SetBackgroundReadBuffer(bs)
 
 	ic := &idleConn{conn: conn, vc: vc, pool: p}
 	p.idle = append(p.idle, ic)

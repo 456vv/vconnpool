@@ -136,8 +136,7 @@ func (t *connSingle) Close() error {
 
 	// 尝试归还连接池
 	if !t.discard.Load() && cp != nil && t.bufSize <= 0 {
-		err := cp.putPoolConn(conn, addr, cp.IdleTimeout, 0)
-		if err == nil || errors.Is(err, ErrConnAlreadyExists) {
+		if err := cp.putPoolConn(conn, addr, cp.IdleTimeout, 0); err == nil || errors.Is(err, ErrConnAlreadyExists) {
 			return nil // 成功归还或连接已存在（视为成功归还，池已持有）
 		}
 		// 若因重复、池满等原因放回失败，则继续执行物理关闭
@@ -292,10 +291,10 @@ func (p *pools) get() (net.Conn, []byte, error) {
 	defer p.mu.Unlock()
 
 	for len(p.idle) > 0 {
-		n := len(p.idle) - 1
-		ic := p.idle[n]
-		p.idle[n] = nil
-		p.idle = p.idle[:n]
+		ic := p.idle[0]
+		p.idle[0] = nil
+		p.idle = p.idle[1:]
+		n := len(p.idle)
 		delete(p.present, ic.conn)
 		p.leqConnIdleNotify(n) // 通知等待空闲连接数减少的goroutine
 
@@ -372,7 +371,7 @@ func (p *pools) connNotify(mc map[int][]chan bool, l int) {
 }
 
 // connWatiClean 统一清理等待队列，在锁内调用
-func (p *pools) connWatiClean(mc map[int][]chan bool) {
+func (p *pools) connWaitClean(mc map[int][]chan bool) {
 	for _, channels := range mc {
 		for _, ch := range channels {
 			select {
@@ -393,6 +392,9 @@ func (p *pools) geqConnNumWait(l int) <-chan bool {
 		return ch
 	}
 
+	if p.connNumGeq == nil {
+		p.connNumGeq = make(map[int][]chan bool)
+	}
 	p.connNumGeq[l] = append(p.connNumGeq[l], ch)
 	return ch
 }
@@ -402,8 +404,10 @@ func (p *pools) geqConnNumNotify(l int) {
 }
 
 func (p *pools) geqConnNumClean() {
-	p.connWatiClean(p.connNumGeq)
-	p.connNumGeq = make(map[int][]chan bool)
+	if p.connNumGeq != nil {
+		p.connWaitClean(p.connNumGeq)
+		p.connNumGeq = make(map[int][]chan bool)
+	}
 }
 
 func (p *pools) leqConnNumWait(l int) <-chan bool {
@@ -416,6 +420,9 @@ func (p *pools) leqConnNumWait(l int) <-chan bool {
 		return ch
 	}
 
+	if p.connNumLeq == nil {
+		p.connNumLeq = make(map[int][]chan bool)
+	}
 	p.connNumLeq[l] = append(p.connNumLeq[l], ch)
 	return ch
 }
@@ -425,8 +432,10 @@ func (p *pools) leqConnNumNotify(l int) {
 }
 
 func (p *pools) leqConnNumClean() {
-	p.connWatiClean(p.connNumLeq)
-	p.connNumLeq = make(map[int][]chan bool)
+	if p.connNumLeq != nil {
+		p.connWaitClean(p.connNumLeq)
+		p.connNumLeq = make(map[int][]chan bool)
+	}
 }
 
 func (p *pools) geqConnIdleWait(l int) <-chan bool {
@@ -439,6 +448,9 @@ func (p *pools) geqConnIdleWait(l int) <-chan bool {
 		return ch
 	}
 
+	if p.connIdleGeq == nil {
+		p.connIdleGeq = make(map[int][]chan bool)
+	}
 	p.connIdleGeq[l] = append(p.connIdleGeq[l], ch)
 	return ch
 }
@@ -448,8 +460,10 @@ func (p *pools) geqConnIdleNotify(l int) {
 }
 
 func (p *pools) geqConnIdleClean() {
-	p.connWatiClean(p.connIdleGeq)
-	p.connIdleGeq = make(map[int][]chan bool)
+	if p.connIdleGeq != nil {
+		p.connWaitClean(p.connIdleGeq)
+		p.connIdleGeq = make(map[int][]chan bool)
+	}
 }
 
 func (p *pools) leqConnIdleWait(l int) <-chan bool {
@@ -462,6 +476,9 @@ func (p *pools) leqConnIdleWait(l int) <-chan bool {
 		return ch
 	}
 
+	if p.connIdleLeq == nil {
+		p.connIdleLeq = make(map[int][]chan bool)
+	}
 	p.connIdleLeq[l] = append(p.connIdleLeq[l], ch)
 	return ch
 }
@@ -471,8 +488,10 @@ func (p *pools) leqConnIdleNotify(l int) {
 }
 
 func (p *pools) leqConnIdleClean() {
-	p.connWatiClean(p.connIdleLeq)
-	p.connIdleLeq = make(map[int][]chan bool)
+	if p.connIdleLeq != nil {
+		p.connWaitClean(p.connIdleLeq)
+		p.connIdleLeq = make(map[int][]chan bool)
+	}
 }
 
 func (p *pools) clean() {
@@ -530,32 +549,34 @@ func addrKey(network, address string) string {
 
 // loadPool 获取或创建指定地址的 pools 实例
 func (p *Pool) loadPool(addr net.Addr) *pools {
+	if addr == nil {
+		return nil // 防御性
+	}
 	key := addrKey(addr.Network(), addr.String())
 	p.mu.RLock()
-	ps, ok := p.conns[key]
-	p.mu.RUnlock()
-	if ok {
+	if ps, ok := p.conns[key]; ok {
+		p.mu.RUnlock()
 		return ps
 	}
+	p.mu.RUnlock()
 
 	p.mu.Lock() // 升级为写锁以创建或初始化
 	defer p.mu.Unlock()
 	if p.conns == nil {
 		p.conns = make(map[string]*pools)
 	}
-	// Double check, in case another goroutine created it while upgrading lock
-	ps, ok = p.conns[key]
-	if !ok {
-		ps = &pools{
-			cp:          p,
-			present:     make(map[net.Conn]struct{}),
-			connIdleLeq: make(map[int][]chan bool),
-			connIdleGeq: make(map[int][]chan bool),
-			connNumGeq:  make(map[int][]chan bool),
-			connNumLeq:  make(map[int][]chan bool),
-		}
-		p.conns[key] = ps
+	if ps, ok := p.conns[key]; ok {
+		return ps
 	}
+	ps := &pools{
+		cp:          p,
+		present:     make(map[net.Conn]struct{}),
+		connIdleLeq: make(map[int][]chan bool),
+		connIdleGeq: make(map[int][]chan bool),
+		connNumGeq:  make(map[int][]chan bool),
+		connNumLeq:  make(map[int][]chan bool),
+	}
+	p.conns[key] = ps
 	return ps
 }
 
@@ -569,19 +590,39 @@ func (p *Pool) removeUsedConn(conn net.Conn) {
 }
 
 func (p *Pool) WaitConnNumGeq(addr net.Addr, l int) <-chan bool {
-	return p.loadPool(addr).geqConnNumWait(l)
+	if ps := p.loadPool(addr); ps != nil {
+		return ps.geqConnNumWait(l)
+	}
+	ch := make(chan bool, 1)
+	ch <- false
+	return ch
 }
 
 func (p *Pool) WaitConnNumLeq(addr net.Addr, l int) <-chan bool {
-	return p.loadPool(addr).leqConnNumWait(l)
+	if ps := p.loadPool(addr); ps != nil {
+		return ps.leqConnNumWait(l)
+	}
+	ch := make(chan bool, 1)
+	ch <- false
+	return ch
 }
 
 func (p *Pool) WaitConnIdleGeq(addr net.Addr, l int) <-chan bool {
-	return p.loadPool(addr).geqConnIdleWait(l)
+	if ps := p.loadPool(addr); ps != nil {
+		return ps.geqConnIdleWait(l)
+	}
+	ch := make(chan bool, 1)
+	ch <- false
+	return ch
 }
 
 func (p *Pool) WaitConnIdleLeq(addr net.Addr, l int) <-chan bool {
-	return p.loadPool(addr).leqConnIdleWait(l)
+	if ps := p.loadPool(addr); ps != nil {
+		return ps.leqConnIdleWait(l)
+	}
+	ch := make(chan bool, 1)
+	ch <- false
+	return ch
 }
 
 func (p *Pool) getPoolConn(network, address string) (net.Conn, []byte, error) {
@@ -592,7 +633,6 @@ func (p *Pool) getPoolConn(network, address string) (net.Conn, []byte, error) {
 	if !ok {
 		return nil, nil, ErrConnNotAvailable
 	}
-
 	return ps.get()
 }
 
@@ -695,8 +735,11 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	p.mu.Lock()
 	if p.closed.Load() {
 		p.connNum.Add(-1) // 回滚计数，防止资源泄露
-		p.loadPool(addr).connTotalCountAdd(-1)
+		if ps := p.loadPool(addr); ps != nil {
+			ps.connTotalCountAdd(-1)
+		}
 		conn.Close()
+		p.mu.Unlock()
 		return nil, ErrConnPoolClosed
 	}
 	if p.usedConns == nil {
@@ -832,6 +875,9 @@ func (p *Pool) PutFull(conn net.Conn, addr net.Addr, timeout time.Duration, bs i
 
 // CloseIdleConnection 关闭指定地址的空闲连接
 func (p *Pool) CloseIdleConnection(addr net.Addr) {
+	if addr == nil {
+		return
+	}
 	key := addrKey(addr.Network(), addr.String())
 	p.mu.RLock()
 	ps, ok := p.conns[key]
@@ -860,7 +906,7 @@ func (p *Pool) Close() error {
 	for conn := range p.usedConns {
 		conn.Close()
 	}
-	p.usedConns = make(map[net.Conn]struct{})
+	p.usedConns = nil // 避免重复
 	p.mu.Unlock()
 	return nil
 }
@@ -871,7 +917,7 @@ func (p *Pool) Num() int {
 
 // NumIdle 当前空闲连接数量
 func (p *Pool) NumIdle(addr net.Addr) int {
-	if p.closed.Load() {
+	if p.closed.Load() || addr == nil {
 		return 0
 	}
 
@@ -880,7 +926,7 @@ func (p *Pool) NumIdle(addr net.Addr) int {
 
 // NumConn 当前地址连接数量
 func (p *Pool) NumConn(addr net.Addr) int {
-	if p.closed.Load() {
+	if p.closed.Load() || addr == nil {
 		return 0
 	}
 

@@ -11,7 +11,7 @@
 - **并发安全**：`Pool` 可被多个 goroutine 并发使用；`Close` 幂等。
 - **不丢字节**：出借时若连接在空闲期已收到对端数据，会随连接一并交回（`GetFull` 的第二返回值），不会静默丢弃。
 
-依赖：[github.com/456vv/vconn/v2](https://github.com/456vv/vconn)。
+依赖：[github.com/456vv/vconn/v2](https://github.com/456vv/vconn)
 
 ---
 

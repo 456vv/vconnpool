@@ -23,7 +23,11 @@ func testResolver(network, address string) (net.Addr, error) {
 
 func newTestPool(t *testing.T, d Dialer, opts ...func(*Pool)) *Pool {
 	t.Helper()
-	p := &Pool{Dialer: d, ResolveAddr: testResolver, IdleTimeout: time.Minute}
+	p := New(Config{
+		Dialer:      d,
+		ResolveAddr: testResolver,
+		IdleTimeout: time.Minute,
+	})
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -429,7 +433,11 @@ func TestIdleTimeout(t *testing.T) {
 		for _, tc := range tests {
 			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
-				p := newTestPool(t, newPipeDialer(t), func(p *Pool) { p.IdleTimeout = tc.idle })
+				p := newTestPool(t, newPipeDialer(t), func(p *Pool) {
+					p.UpdateConfig(func(c *Config) {
+						c.IdleTimeout = tc.idle
+					})
+				})
 				a := tc.use(t, p, tc.idle)
 
 				// 轮询等扫描器回收，而不是固定睡眠。
@@ -446,7 +454,11 @@ func TestIdleTimeout(t *testing.T) {
 
 	// 远未到期的窗口内：不提前回收、取出仍可用。
 	t.Run("not reclaimed before timeout", func(t *testing.T) {
-		p := newTestPool(t, newPipeDialer(t), func(p *Pool) { p.IdleTimeout = 5 * time.Second })
+		p := newTestPool(t, newPipeDialer(t), func(p *Pool) {
+			p.UpdateConfig(func(c *Config) {
+				c.IdleTimeout = 5 * time.Second
+			})
+		})
 
 		c := mustDial(t, p, addr)
 		if err := c.Close(); err != nil {
@@ -529,7 +541,11 @@ func TestPutContracts(t *testing.T) {
 	})
 
 	t.Run("over idle limit fails and closes conn", func(t *testing.T) {
-		p := newTestPool(t, newPipeDialer(t), func(p *Pool) { p.IdleConn = 1 })
+		p := newTestPool(t, newPipeDialer(t), func(p *Pool) {
+			p.UpdateConfig(func(c *Config) {
+				c.IdleConn = 1
+			})
+		})
 
 		first, peer1 := net.Pipe()
 		t.Cleanup(func() { _ = peer1.Close() })
@@ -547,7 +563,11 @@ func TestPutContracts(t *testing.T) {
 
 	t.Run("over max conn fails and closes conn", func(t *testing.T) {
 		pd := newPipeDialer(t)
-		p := newTestPool(t, pd, func(p *Pool) { p.MaxConn = 1 })
+		p := newTestPool(t, pd, func(p *Pool) {
+			p.UpdateConfig(func(c *Config) {
+				c.MaxConn = 1
+			})
+		})
 		held := mustDial(t, p, addr)
 
 		server, peer := net.Pipe()
@@ -597,7 +617,11 @@ func TestMaxConnAndFailureAccounting(t *testing.T) {
 
 	t.Run("max conn enforced", func(t *testing.T) {
 		pd := newPipeDialer(t)
-		p := newTestPool(t, pd, func(p *Pool) { p.MaxConn = 1 })
+		p := newTestPool(t, pd, func(p *Pool) {
+			p.UpdateConfig(func(c *Config) {
+				c.MaxConn = 1
+			})
+		})
 
 		c1 := mustDial(t, p, addr)
 		if _, err := p.Dial(addr.Network(), addr.String()); !errors.Is(err, ErrConnPoolMax) {
@@ -624,7 +648,11 @@ func TestMaxConnAndFailureAccounting(t *testing.T) {
 		errBoom := errors.New("dial boom")
 		pd := &pipeDialer{errs: []error{errBoom}}
 		t.Cleanup(pd.closePeers)
-		p := newTestPool(t, pd, func(p *Pool) { p.MaxConn = 1 })
+		p := newTestPool(t, pd, func(p *Pool) {
+			p.UpdateConfig(func(c *Config) {
+				c.MaxConn = 1
+			})
+		})
 
 		if _, err := p.Dial(addr.Network(), addr.String()); !errors.Is(err, errBoom) {
 			t.Fatalf("first Dial = %v, want %v", err, errBoom)
@@ -1185,7 +1213,11 @@ func TestConcurrentDialWriteReadClose(t *testing.T) {
 	)
 	addr := Addr{Net: "tcp", Name: "concurrent.test:1"}
 
-	p := newTestPool(t, echoDialer{}, func(p *Pool) { p.IdleConn = idleMax })
+	p := newTestPool(t, echoDialer{}, func(p *Pool) {
+		p.UpdateConfig(func(c *Config) {
+			c.IdleConn = idleMax
+		})
+	})
 
 	// 后台并发读统计接口：锁竞争下做冒烟，不参与正确性判定。
 	stopStats := make(chan struct{})
@@ -1306,7 +1338,7 @@ func TestConcurrentDialWriteReadClose(t *testing.T) {
 
 func BenchmarkPoolDialClose(b *testing.B) {
 	pd := &pipeDialer{}
-	p := &Pool{Dialer: pd, ResolveAddr: testResolver, IdleTimeout: time.Minute}
+	p := New(Config{Dialer: pd, ResolveAddr: testResolver, IdleTimeout: time.Minute})
 	defer func() { _ = p.Close(); pd.closePeers() }()
 
 	addr := Addr{Net: "tcp", Name: "bench.dial:1"}
@@ -1324,7 +1356,7 @@ func BenchmarkPoolDialClose(b *testing.B) {
 }
 
 func BenchmarkPoolDialWriteReadClose(b *testing.B) {
-	p := &Pool{Dialer: echoDialer{}, ResolveAddr: testResolver, IdleTimeout: time.Minute}
+	p := New(Config{Dialer: echoDialer{}, ResolveAddr: testResolver, IdleTimeout: time.Minute})
 	defer func() { _ = p.Close() }()
 
 	addr := Addr{Net: "tcp", Name: "bench.io:1"}
@@ -1356,7 +1388,7 @@ func BenchmarkPoolDialWriteReadClose(b *testing.B) {
 }
 
 func BenchmarkPoolParallelDialWriteReadClose(b *testing.B) {
-	p := &Pool{Dialer: echoDialer{}, ResolveAddr: testResolver, IdleTimeout: time.Minute}
+	p := New(Config{Dialer: echoDialer{}, ResolveAddr: testResolver, IdleTimeout: time.Minute})
 	defer func() { _ = p.Close() }()
 
 	addr := Addr{Net: "tcp", Name: "bench.parallel:1"}
@@ -1394,7 +1426,7 @@ func BenchmarkPoolParallelDialWriteReadClose(b *testing.B) {
 }
 
 func BenchmarkPoolGetFullPutFull(b *testing.B) {
-	p := &Pool{IdleTimeout: time.Minute}
+	p := New(Config{IdleTimeout: time.Minute})
 	addr := Addr{Net: "tcp", Name: "bench.getput:1"}
 
 	server, peer := net.Pipe()

@@ -703,7 +703,8 @@ func (p *pools) precheck(conn net.Conn) error {
 			return ErrConnExists
 		}
 	}
-	if p.cp.IdleConn > 0 && p.idleCountLocked() >= p.cp.IdleConn {
+	maxIdle := p.cp.conf().IdleConn
+	if maxIdle > 0 && p.idleCountLocked() >= maxIdle {
 		return ErrConnIdleMax
 	}
 	return nil
@@ -738,7 +739,8 @@ func (p *pools) put(conn net.Conn, pending []byte, timeout time.Duration, bs int
 	if _, ok := p.present[conn]; ok {
 		return ErrConnExists
 	}
-	if p.cp.IdleConn > 0 && p.idleCountLocked() >= p.cp.IdleConn {
+	maxIdle := p.cp.conf().IdleConn
+	if maxIdle > 0 && p.idleCountLocked() >= maxIdle {
 		return ErrConnIdleMax
 	}
 
@@ -1112,14 +1114,17 @@ var defaultDialer = &net.Dialer{
 
 // Pool 连接池。
 //
-// 并发约定：Dialer / ResolveAddr / IdleConn / IdleTimeout / MaxConn 是**配置项**，
-// 必须在任何 Dial 之前设置完毕；运行期修改它们会产生数据竞争。
+// 零值即可用，等价于「全默认配置」：Dialer / ResolveAddr 回落包级默认，
+// IdleConn / MaxConn 为 0 表示不限，IdleTimeout <= 0 表示空闲不过期。
+//
+// 并发约定：配置**只能**经 New / SetConfig / UpdateConfig 发布。池在运行期
+// 只读 conf() 返回的不可变快照；直接修改 Pool 上的字段或已发布的
+// PoolConfig 都属数据竞争，且不会被池观察到（热改必须走 UpdateConfig）。
 type Pool struct {
-	Dialer      Dialer
-	ResolveAddr func(network, address string) (net.Addr, error)
-	IdleConn    int
-	IdleTimeout time.Duration
-	MaxConn     int
+	// cfg 是运行期生效的不可变配置快照，由 conf() 惰性发布、由
+	// SetConfig / UpdateConfig 替换。
+	// 发布后永不清空（Close 也不清）—— 否则 conf() 会在 Close 之后返回 nil。
+	cfg atomic.Pointer[Config]
 
 	connNum atomic.Int64
 	conns   map[string]*pools
@@ -1157,6 +1162,88 @@ var (
 	_ net.Conn  = (*connSingle)(nil)
 	_ io.Closer = (*Pool)(nil)
 )
+
+// reapplyTimeout 以新超时重算该桶全部存量空闲连接的过期时间。
+//
+// 以各连接**入池时刻 putAt** 为基准：idleAt = putAt + newTimeout。
+//   - newTimeout <= 0：清空 expireAt（永不过期），与「新配置不过期」一致；
+//   - 已经过期的连接（putAt + newTimeout <= now）**不在这里关闭**：
+//     它们会被 sweepExpired / get 的 expired() 校验自然回收，
+//     本函数只做簿记，不碰 socket，保持 O(n) 无阻塞。
+//
+// 锁内完成：只改内存字段 + minExpire，临界区极短。
+// done 返回是否发生过任何修改（供测试断言）。
+func (p *pools) reapplyTimeout(timeout time.Duration) (done bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.cp.closed.Load() || p.idleCountLocked() == 0 {
+		return false
+	}
+
+	now := time.Now()
+	for i := p.head; i < len(p.idle); i++ {
+		ic := p.idle[i]
+		ic.timeout = timeout // 取出时原样交回 connSingle，与新配置对齐
+		if timeout > 0 {
+			at := ic.putAt.Add(timeout)
+			if at.Before(now) {
+				// 已经过期：标记为立即过期（UnixNano 仍 > 0），
+				// 让 sweepExpired / get 的校验把它回收，本函数不关 socket。
+				at = now.Add(-time.Nanosecond)
+			}
+			ic.expireAt = at
+		} else {
+			ic.expireAt = time.Time{} // 永不过期
+		}
+		done = true
+	}
+	// 新超时整体变小（或部分连接被标记立即过期）时 minExpire 必须前移；
+	// 整体变大时 minExpire 也可能仍指向一个更小的旧值，全量重算最简单可靠。
+	p.recomputeMinLocked()
+	// minExpire 变化后应让扫描器重算睡眠：无条件唤醒一次（SetConfig 低频）。
+	p.cp.wakeSweeper()
+	return done
+}
+
+// trimIdle 把该桶空闲队列裁剪到不超过 maxIdle 条。
+//
+// 摘除顺序：从队首（FIFO 最老）开始 —— 与 IdleTimeout 的「最老优先淘汰」
+// 语义一致。锁内摘除 + 记账，锁外关闭 socket。
+//
+// 与 sweepExpired 相同的摘除纪律：锁内原地压缩 + 从 present 删除，
+// 摘除列表在锁外统一 discardOwned（关闭 + 归还配额），不重复记账。
+func (p *pools) trimIdle(maxIdle int) {
+	p.mu.Lock()
+	if p.cp.closed.Load() || p.idleCountLocked() <= maxIdle {
+		p.mu.Unlock()
+		return
+	}
+	n := p.idleCountLocked() - maxIdle
+	dead := make([]*idleConn, n)
+	copy(dead, p.idle[p.head:p.head+n])
+
+	// 原地压缩：跳过被摘除的前 n 条。
+	rest := p.idle[p.head+n:]
+	copy(p.idle[p.head:], rest)
+	for i := p.head + len(rest); i < len(p.idle); i++ {
+		p.idle[i] = nil
+	}
+	p.idle = p.idle[:p.head+len(rest)]
+	if p.head >= len(p.idle) {
+		p.idle, p.head = nil, 0
+	}
+	for _, ic := range dead {
+		delete(p.present, ic.conn)
+	}
+	p.recomputeMinLocked()
+	p.notifyAllLocked()
+	p.mu.Unlock()
+
+	for _, ic := range dead {
+		p.discardOwned(ic) // 关闭 socket + 归还全局配额与桶计数
+	}
+}
 
 // addrKey 生成地址桶的键。
 //
@@ -1325,8 +1412,8 @@ func (p *Pool) nextExpiry() (time.Time, bool) {
 // 扫描器会睡到「最早到期时间」与「基准节拍」二者中更早的那个。
 func (p *Pool) sweepInterval() time.Duration {
 	iv := 5 * time.Second
-	if p.IdleTimeout > 0 {
-		iv = p.IdleTimeout / 2
+	if it := p.conf().IdleTimeout; it > 0 {
+		iv = it / 2
 	}
 	if iv < 100*time.Millisecond {
 		iv = 100 * time.Millisecond
@@ -1346,7 +1433,7 @@ func (p *Pool) sweepInterval() time.Duration {
 // 这个分流是必需的：到期时刻通常远密于基准节拍，若每次到期都跑 Check()，
 // 探活频率会被放大到与 put/get 同阶。
 //
-// p.IdleTimeout 等是配置项（Dial 前设置完毕），运行期修改属数据竞争。
+// 配置项经 conf() 读取（不可变快照），热改通过 SetConfig / UpdateConfig 发布。
 func (p *Pool) sweepLoop(wake <-chan struct{}) {
 	defer p.sweepWg.Done()
 	if p.closed.Load() {
@@ -1420,14 +1507,15 @@ func (p *Pool) sweepAll(now time.Time, health bool) {
 
 // ---- 计数与配额 ----
 
-func (p *Pool) checkAndIncConnNum() error {
-	if p.MaxConn <= 0 {
+// checkAndIncConnNum 按上限借一个连接配额；max <= 0 表示不限。
+func (p *Pool) checkAndIncConnNum(max int) error {
+	if max <= 0 {
 		p.connNum.Add(1)
 		return nil
 	}
 	for {
 		cur := p.connNum.Load()
-		if int(cur) >= p.MaxConn {
+		if int(cur) >= max {
 			return ErrConnPoolMax
 		}
 		if p.connNum.CompareAndSwap(cur, cur+1) {
@@ -1631,7 +1719,7 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	//   - 设置为 true 时 poolConn == true，池空即失败，不拨号。
 	if conn == nil && !poolConn {
 		// 新建的连接按池的默认策略归还
-		putTimeout, putBS = p.IdleTimeout, 0
+		putTimeout, putBS = p.conf().IdleTimeout, 0
 		conn, err = p.dialNew(ctx, network, address)
 	}
 	if err != nil {
@@ -1692,17 +1780,18 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	return cs, nil
 }
 
+// dialNew —— 一次拨号只读一份快照
 func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, error) {
-	if err := p.checkAndIncConnNum(); err != nil {
+	cfg := p.conf()
+	if err := p.checkAndIncConnNum(cfg.MaxConn); err != nil {
 		return nil, err
 	}
-
 	var (
 		addr net.Addr
 		err  error
 	)
-	if p.ResolveAddr != nil {
-		addr, err = p.ResolveAddr(network, address)
+	if cfg.ResolveAddr != nil {
+		addr, err = cfg.ResolveAddr(network, address)
 	} else {
 		addr, err = ResolveAddr(network, address)
 	}
@@ -1710,8 +1799,7 @@ func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, 
 		p.connNum.Add(-1)
 		return nil, err
 	}
-
-	dialer := p.Dialer
+	dialer := cfg.Dialer
 	if dialer == nil {
 		dialer = defaultDialer
 	}
@@ -1775,7 +1863,7 @@ func (p *Pool) Add(conn net.Conn) error {
 //
 // 所有权语义与 PutFull 一致：返回错误时连接已被关闭，调用方不应再 Close。
 func (p *Pool) Put(conn net.Conn, addr net.Addr) error {
-	return p.PutFull(conn, addr, p.IdleTimeout, 0)
+	return p.PutFull(conn, addr, p.conf().IdleTimeout, 0)
 }
 
 // PutFull 适合存放客户端/服务端的连接，支持指定地址、超时和缓存大小
@@ -1828,7 +1916,7 @@ func (p *Pool) PutFull(conn net.Conn, addr net.Addr, timeout time.Duration, bs i
 	//
 	// 用 vc.Close() 而不是 conn.Close()：CheckBlocking 可能已把字节读进 vc 的
 	// 预读缓冲，必须连同包装一起销毁，避免留下一条"少了几字节"的连接。
-	if err := p.checkAndIncConnNum(); err != nil {
+	if err := p.checkAndIncConnNum(p.conf().MaxConn); err != nil {
 		vc.Close()
 		return err
 	}

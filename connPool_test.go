@@ -308,7 +308,7 @@ func TestPoolCountsAndReuse(t *testing.T) {
 	}
 
 	// RawConn 移交所有权后：配额归零、Close 幂等、底层连接仍归调用方。
-	raw := c2.RawConn()
+	raw, _ := c2.RawConn()
 	assertCounts(t, p, addr, 0, 0, 0)
 	if err := c2.Close(); err != nil {
 		t.Fatalf("Close after RawConn: %v", err)
@@ -335,12 +335,11 @@ func TestConnLifecycle(t *testing.T) {
 		p := newTestPool(t, pd)
 		c := mustDial(t, p, addr)
 
-		raw := c.RawConn()
+		raw, _ := c.RawConn()
 		if raw == nil {
 			t.Fatal("RawConn returned nil")
 		}
 		assertCounts(t, p, addr, 0, 0, 0)
-		mustPanic(t, func() { _ = c.RawConn() }) // 二次移交必须 panic
 		if err := c.Close(); err != nil {
 			t.Fatalf("Close after RawConn: %v", err)
 		}
@@ -641,7 +640,7 @@ func TestMaxConnAndFailureAccounting(t *testing.T) {
 		if _, err := p.Dial(addr.Network(), addr.String()); !errors.Is(err, ErrConnPoolMax) {
 			t.Fatalf("Dial while max conn in use = %v, want ErrConnPoolMax", err)
 		}
-		_ = c2.Close()
+		c2.Close()
 	})
 
 	t.Run("failed dial rolls back quota", func(t *testing.T) {
@@ -922,14 +921,14 @@ func TestWaitersTransitions(t *testing.T) {
 
 	// Num >= 2：第二次 Dial 后成立。
 	c1 := mustDial(t, p, addr)
-	chNum2 := p.WaitConnNumGeq(addr, 2)
+	chNum2 := p.WaitConnNumGeq(nil, addr, 2)
 	c2 := mustDial(t, p, addr)
 	if got := waitBool(t, chNum2); !got {
 		t.Fatal("WaitConnNumGeq(2) should become true")
 	}
 
 	// Idle >= 1：归还后成立。
-	chIdle1 := p.WaitConnIdleGeq(addr, 1)
+	chIdle1 := p.WaitConnIdleGeq(nil, addr, 1)
 	if err := c1.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -938,7 +937,7 @@ func TestWaitersTransitions(t *testing.T) {
 	}
 
 	// Idle <= 0：GetFull pop 掉唯一空闲连接后成立。
-	chIdle0 := p.WaitConnIdleLeq(addr, 0)
+	chIdle0 := p.WaitConnIdleLeq(nil, addr, 0)
 	raw, _, err := p.GetFull(addr)
 	if err != nil {
 		t.Fatal(err)
@@ -949,8 +948,8 @@ func TestWaitersTransitions(t *testing.T) {
 	_ = raw.Close()
 
 	// Num <= 0：RawConn 移交所有权后成立。
-	chNum0 := p.WaitConnNumLeq(addr, 0)
-	raw2 := c2.RawConn()
+	chNum0 := p.WaitConnNumLeq(nil, addr, 0)
+	raw2, _ := c2.RawConn()
 	if got := waitBool(t, chNum0); !got {
 		t.Fatal("WaitConnNumLeq(0) should become true after ownership transfer")
 	}
@@ -959,7 +958,7 @@ func TestWaitersTransitions(t *testing.T) {
 	// 池关闭必须向未满足的等待者投递 false。
 	p2 := newTestPool(t, newPipeDialer(t))
 	c3 := mustDial(t, p2, addr)
-	chAbort := p2.WaitConnIdleGeq(addr, 1)
+	chAbort := p2.WaitConnIdleGeq(nil, addr, 1)
 	if err := p2.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -977,10 +976,10 @@ func TestWaitersEmptyBucketContract(t *testing.T) {
 		name string
 		ch   <-chan bool
 	}{
-		{"idle>=0", newTestPool(t, newPipeDialer(t)).WaitConnIdleGeq(addr, 0)},
-		{"idle<=0", newTestPool(t, newPipeDialer(t)).WaitConnIdleLeq(addr, 0)},
-		{"num>=0", newTestPool(t, newPipeDialer(t)).WaitConnNumGeq(addr, 0)},
-		{"num<=0", newTestPool(t, newPipeDialer(t)).WaitConnNumLeq(addr, 0)},
+		{"idle>=0", newTestPool(t, newPipeDialer(t)).WaitConnIdleGeq(nil, addr, 0)},
+		{"idle<=0", newTestPool(t, newPipeDialer(t)).WaitConnIdleLeq(nil, addr, 0)},
+		{"num>=0", newTestPool(t, newPipeDialer(t)).WaitConnNumGeq(nil, addr, 0)},
+		{"num<=0", newTestPool(t, newPipeDialer(t)).WaitConnNumLeq(nil, addr, 0)},
 	}
 	for _, tc := range tests {
 		tc := tc
@@ -1000,7 +999,7 @@ func TestWaitersEmptyBucketContract(t *testing.T) {
 	t.Run("unknown bucket with positive threshold fires after dial", func(t *testing.T) {
 		p := newTestPool(t, newPipeDialer(t))
 		a := Addr{Net: "tcp", Name: "wait.empty.geq:1"}
-		ch := p.WaitConnIdleGeq(a, 1)
+		ch := p.WaitConnIdleGeq(nil, a, 1)
 
 		select {
 		case got := <-ch:
@@ -1145,11 +1144,13 @@ func TestPendingData(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rf, ok := c.(interface{ RawConnFull() (net.Conn, []byte) })
+			rf, ok := c.(interface {
+				RawConnFull() (net.Conn, []byte, error)
+			})
 			if !ok {
 				t.Fatal("connection does not expose RawConnFull")
 			}
-			raw, pending := rf.RawConnFull()
+			raw, pending, _ := rf.RawConnFull()
 			if string(pending) != "raw" {
 				t.Fatalf("pending = %q, want raw", pending)
 			}

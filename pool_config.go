@@ -79,15 +79,7 @@ func normalize(c *Config) {
 	}
 }
 
-// idleConnDecreased 报告「单地址空闲上限是否收紧」。
-//
-// 0 表示不限（见 precheck / put 的 `maxIdle > 0` 判定），因此：
-//   - 0 → n（n > 0）：从不限改为有上限，是收紧；
-//   - n → 0          ：从有上限改为不限，不是收紧；
-//   - n → m          ：m < n 才是收紧。
-//
-// 只有收紧才需要 trimIdle：放宽时多出来的空闲连接会被 put 的
-// ErrConnIdleMax 与新上限自然收敛，无需主动裁剪。
+// idleConnDecreased 表示硬上限变紧。<=0 表示不限制，IdleConn 和 MaxConn 都适用。
 func idleConnDecreased(prev, next int) bool {
 	if next <= 0 {
 		return false
@@ -98,35 +90,22 @@ func idleConnDecreased(prev, next int) bool {
 	return next < prev
 }
 
-// publish 发布一份新快照，并按**新旧差异**执行最小收敛。c 必须已归一化。
-//
-// 差异收敛的意义：早先的实现无条件 reapplyTimeout，会在「只改 Dialer」
-// 这类与空闲策略无关的热改里把存量空闲连接的 timeout 全部重置为池级
-// IdleTimeout，覆盖掉 PutFull 曾为它们单独指定的超时。现在只有真正变化的
-// 维度才触发动作：
-//   - IdleTimeout 变了（含 有超时 → 不过期）→ reapplyTimeout + 唤醒扫描器；
-//   - IdleConn 收紧 → trimIdle。
-//
-// 发布与 closed 的并发：closed 置位后没有任何决策路径会再读 cfg，本次 Store
-// 属于无害的冗余写；收敛循环遍历的是快照出的桶列表，桶的 clean 后状态由
-// 各方法自身的 closed 判定兜底。
 func (p *Pool) publish(c *Config) {
 	prev := p.cfg.Swap(c)
 
-	// prev == nil 表示此前从未发布过（零值 Pool 直接 SetConfig）。
-	// 此时以零值配置为基准比较：零值即全默认，语义正确。
 	base := Config{}
 	if prev != nil {
 		base = *prev
 	}
 	needReapply := base.IdleTimeout != c.IdleTimeout
 	needTrim := idleConnDecreased(base.IdleConn, c.IdleConn)
-	if !needReapply && !needTrim {
+	// 放宽上限不会让已经 WaitErrOther 的等待复活，也不改变当前计数，不必扫桶。
+	// 收紧时必须先 trim 再 recheck，否则 IdleGeq 会在裁剪前被快照判成 Satisfied。
+	needRewait := needTrim || idleConnDecreased(base.MaxConn, c.MaxConn)
+	if !needReapply && !needRewait {
 		return
 	}
 
-	// 读锁内只做桶快照，锁外逐桶执行可能阻塞 / 碰 socket 的操作，
-	// 与 CloseIdleConnections / sweepAll 的模式一致。
 	p.mu.RLock()
 	list := make([]*pools, 0, len(p.conns))
 	for _, ps := range p.conns {
@@ -135,23 +114,19 @@ func (p *Pool) publish(c *Config) {
 	p.mu.RUnlock()
 
 	for _, ps := range list {
-		// IdleTimeout <= 0 也要重算：reapplyTimeout(0) 会清空存量空闲连接的
-		// expireAt，否则「从有超时改为不过期」不会对已有连接生效。
 		if needReapply {
 			ps.reapplyTimeout(c.IdleTimeout)
 		}
-		// 放在 reapplyTimeout 之后：若本次同时缩短了超时并调小了上限，
-		// 先重算能让 trimIdle 摘掉的那批与新超时一致。
-		// needTrim 为真时 c.IdleConn 必然 > 0（见 idleConnDecreased）。
 		if needTrim {
 			ps.trimIdle(c.IdleConn)
 		}
+		if needRewait {
+			ps.recheckWaiters()
+		}
 	}
-
-	// 无条件唤醒扫描器：必须区别于条件投递的 wakeSweeperAt ——
-	// 热改可能让「最早到期时间」变小或让基准节拍变化，
-	// 只有无条件唤醒才能让 sweepLoop 立刻重算睡眠时长。
-	p.wakeSweeper()
+	if needReapply || needTrim {
+		p.wakeSweeper()
+	}
 }
 
 // SetConfig 用一份完整配置整体替换当前生效配置，并执行收敛。

@@ -395,7 +395,8 @@ func (ic *idleConn) expired(now time.Time) bool {
 }
 
 type pools struct {
-	cp *Pool
+	cp  *Pool
+	key string // 创建后只读，等于 addrKey。空则 dropBucket 退回扫描
 
 	mu      sync.Mutex
 	idle    []*idleConn // 环形队列：head 之前是已弹出的空位
@@ -499,34 +500,20 @@ func (p *pools) removeLocked(ic *idleConn) bool {
 	return false
 }
 
-func wakeLocked(ws []*waiter, ok bool) {
+func wakeLocked(ws []*waiter, st WaitStatus) {
 	for _, w := range ws {
-		w.wake(ok)
+		w.wake(st)
 	}
 }
 
 func (p *pools) notifyAllLocked() {
-	idle, num := p.idleCountLocked(), int(p.connTotalCount.Load())
-	for k, ws := range p.wait {
-		if p.condAt(k, idle, num) {
-			wakeLocked(ws, true)
-			delete(p.wait, k)
-		}
-	}
+	p.finishWaitersLocked(false)
 }
 
+// wakeAllLocked 只给 clean 用。
+// 非关闭时不再把「条件已成立」报成 WaitAborted；关闭才全部 WaitPoolClosed。
 func (p *pools) wakeAllLocked(abort bool) {
-	idle, num := p.idleCountLocked(), int(p.connTotalCount.Load())
-	for k, ws := range p.wait {
-		met := p.condAt(k, idle, num)
-		if abort || k.l < 0 || met { // l < 0 的 Leq 永远不可满足，直接判负退场
-			wakeLocked(ws, !abort && met)
-			delete(p.wait, k)
-		}
-	}
-	if abort {
-		p.wait = nil
-	}
+	p.finishWaitersLocked(abort)
 }
 
 func (p *pools) connTotalCountAdd(n int64) {
@@ -914,10 +901,14 @@ func addrKey(network, address string) string {
 	return network + "," + address
 }
 
-// withBucket 在 Pool.mu 下把 fn 作用到地址桶上。
-// 已有桶走读锁；没有则写锁创建。fn 返回前不放开 Pool.mu，
-// 因此清扫无法在 fn 期间把这只桶摘掉。
-// fn 里只能再拿这只桶的 mu，不能再拿 Pool.mu，也不能调用 withBucket / reapEmpty / putIdle。
+func (p *Pool) newBucket(key string) *pools {
+	return &pools{
+		cp:      p,
+		key:     key,
+		present: make(map[net.Conn]struct{}, 8),
+	}
+}
+
 func (p *Pool) withBucket(key string, fn func(*pools) error) error {
 	p.ensureSweeper()
 
@@ -938,7 +929,7 @@ func (p *Pool) withBucket(key string, fn func(*pools) error) error {
 	}
 	ps := p.conns[key]
 	if ps == nil {
-		ps = &pools{cp: p, present: make(map[net.Conn]struct{}, 8)}
+		ps = p.newBucket(key)
 		p.conns[key] = ps
 	}
 	err := fn(ps)
@@ -1200,6 +1191,32 @@ func (p *Pool) removeUsedConn(t *connSingle) {
 	p.usedMu.Unlock()
 }
 
+type WaitStatus int8
+
+const (
+	WaitSatisfied   WaitStatus = iota // 判定瞬间谓词为真；动作前必须重读 NumConn/NumIdle
+	WaitAborted                       // 兼容保留；池不再发出
+	WaitContextDone                   // ctx 取消或超时
+	WaitPoolClosed                    // 池已关闭
+	WaitErrOther                      // 参数非法，或超过 MaxConn/IdleConn 硬上限
+)
+
+func (s WaitStatus) String() string {
+	switch s {
+	case WaitSatisfied:
+		return "wait: satisfied"
+	case WaitAborted:
+		return "wait: aborted, condition not met"
+	case WaitContextDone:
+		return "wait: context done"
+	case WaitPoolClosed:
+		return "wait: pool closed"
+	case WaitErrOther:
+		return "wait: condition can never be satisfied"
+	}
+	return "wait: unknown"
+}
+
 const (
 	waitIdleGeq uint8 = iota
 	waitIdleLeq
@@ -1213,13 +1230,13 @@ type waitKey struct {
 }
 
 type waiter struct {
-	ch   chan bool
+	ch   chan WaitStatus
 	stop chan struct{} // 仅当 ctx 可取消（含派生的超时 ctx）时非 nil
 }
 
-func (w *waiter) wake(ok bool) {
+func (w *waiter) wake(st WaitStatus) {
 	select {
-	case w.ch <- ok:
+	case w.ch <- st:
 	default:
 	}
 	if w.stop != nil {
@@ -1227,18 +1244,137 @@ func (w *waiter) wake(ok bool) {
 	}
 }
 
-func (p *pools) condAt(k waitKey, idle, num int) bool {
-	switch k.kind {
+// waitLimits 是等待谓词可见的硬上限。<=0 表示不限制，与 Config 一致。
+type waitLimits struct {
+	maxConn  int
+	idleConn int
+}
+
+func (p *Pool) limits() waitLimits {
+	c := p.conf()
+	return waitLimits{maxConn: c.MaxConn, idleConn: c.IdleConn}
+}
+
+func condMet(kind uint8, l, idle, num int) bool {
+	switch kind {
 	case waitIdleGeq:
-		return idle >= k.l
+		return idle >= l
 	case waitIdleLeq:
-		return idle <= k.l
+		return idle <= l
 	case waitNumGeq:
-		return num >= k.l
+		return num >= l
 	case waitNumLeq:
-		return num <= k.l
+		return num <= l
+	default:
+		return false
 	}
-	return true // 内部常量，不会走到
+}
+
+// evalWait 是无桶、有桶、清扫、改配置共用的完成判定。
+// done 为 false 时 st 无意义，调用方必须继续等。st 的零值是 WaitSatisfied，不能单独使用。
+// 优先级：未知 kind / Leq 的 l < 0 > 此刻谓词为真 > 硬上限下已不可能 > 继续等。
+// 池关闭和 ctx 取消不是快照属性，由调用方先处理。
+func evalWait(kind uint8, l, idle, num int, lim waitLimits) (st WaitStatus, done bool) {
+	switch kind {
+	case waitIdleGeq, waitIdleLeq, waitNumGeq, waitNumLeq:
+	default:
+		return WaitErrOther, true
+	}
+	if num < 0 {
+		num = 0 // 与 NumConn 一致：漂移的负数不当成「还有连接」
+	}
+	if (kind == waitIdleLeq || kind == waitNumLeq) && l < 0 {
+		return WaitErrOther, true
+	}
+	if condMet(kind, l, idle, num) {
+		return WaitSatisfied, true
+	}
+	switch kind {
+	case waitIdleGeq:
+		// 空闲数不会超过总连接数，所以 MaxConn 也是 IdleGeq 的硬上限。
+		if (lim.idleConn > 0 && l > lim.idleConn) || (lim.maxConn > 0 && l > lim.maxConn) {
+			return WaitErrOther, true
+		}
+	case waitNumGeq:
+		if lim.maxConn > 0 && l > lim.maxConn {
+			return WaitErrOther, true
+		}
+	}
+	return 0, false
+}
+
+func (p *pools) evalLocked(k waitKey) (WaitStatus, bool) {
+	return evalWait(k.kind, k.l, p.idleCountLocked(), int(p.connTotalCount.Load()), p.cp.limits())
+}
+
+// finishWaitersLocked 的调用方必须持有 ps.mu。
+// 关闭时全部 WaitPoolClosed；否则只结束「已成立」或「已不可能」的等待。
+func (p *pools) finishWaitersLocked(abort bool) {
+	if abort || p.cp.closed.Load() {
+		for _, ws := range p.wait {
+			wakeLocked(ws, WaitPoolClosed)
+		}
+		p.wait = nil
+		return
+	}
+	if len(p.wait) == 0 {
+		return
+	}
+	idle := p.idleCountLocked()
+	num := int(p.connTotalCount.Load())
+	lim := p.cp.limits()
+	for k, ws := range p.wait {
+		if p.cp.closed.Load() {
+			wakeLocked(ws, WaitPoolClosed)
+			delete(p.wait, k)
+			continue
+		}
+		st, done := evalWait(k.kind, k.l, idle, num, lim)
+		if !done {
+			continue
+		}
+		wakeLocked(ws, st)
+		delete(p.wait, k)
+	}
+	if len(p.wait) == 0 {
+		p.wait = nil
+	}
+}
+
+// recheckWaiters 在 SetConfig 替换快照之后调用。调用方不得持有 Pool.mu 或 ps.mu。
+func (p *pools) recheckWaiters() {
+	p.mu.Lock()
+	p.finishWaitersLocked(false)
+	drop := p.emptyLocked()
+	p.mu.Unlock()
+	if drop {
+		p.cp.dropBucket(p)
+	}
+}
+
+// dropBucket 摘掉已经没有连接、没有等待者的桶。
+// 禁止在持有 ps.mu 时调用：内部要拿 Pool.mu，锁序只能是 Pool.mu → ps.mu。
+func (p *Pool) dropBucket(ps *pools) {
+	if ps == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.conns == nil {
+		return
+	}
+	if key := ps.key; key != "" {
+		if p.conns[key] == ps {
+			p.dropIfEmpty(key, ps)
+		}
+		return
+	}
+	for k, cur := range p.conns {
+		if cur == ps {
+			p.dropIfEmpty(k, ps)
+			return
+		}
+	}
 }
 
 func (p *pools) addWaitLocked(k waitKey, w *waiter) {
@@ -1277,121 +1413,54 @@ func (p *pools) watchWait(ctx context.Context, k waitKey, w *waiter) {
 
 	p.mu.Lock()
 	removed := p.delWaitLocked(k, w)
-	p.mu.Unlock()
+	drop := removed && p.emptyLocked()
+	p.mu.Unlock() // 必须先放开 ps.mu，下面的 dropBucket 要拿 Pool.mu
 	if !removed {
-		return // 与唤醒方擦肩：条目已删、值已投递，不能重复投递
+		return // 唤醒方已投递，不能再发 ContextDone
 	}
 	select {
-	case w.ch <- false: // 让只读 channel、不看 ctx 的调用方也能醒来
+	case w.ch <- WaitContextDone:
 	default:
+	}
+	if drop {
+		p.cp.dropBucket(p)
 	}
 }
 
-func trueChan() chan bool {
-	ch := make(chan bool, 1)
-	ch <- true
+func falseChan(st WaitStatus) chan WaitStatus {
+	ch := make(chan WaitStatus, 1)
+	ch <- st
 	return ch
 }
 
-func (p *Pool) waitCond(ctx context.Context, kind uint8, addr net.Addr, l int) <-chan bool {
-	if addr == nil {
-		return falseChan()
-	}
-	if ctx != nil && ctx.Err() != nil {
-		return falseChan()
-	}
-	if p.closed.Load() {
-		return falseChan()
-	}
-	// 负数的 Leq 永远不成立，不必碰 map。已有桶的判断仍交给 waitCh，避免计数漂移时提前返回。
-	if (kind == waitIdleLeq || kind == waitNumLeq) && l < 0 {
-		return falseChan()
-	}
-
-	key := addrKey(addr.Network(), addr.String())
-
-	p.mu.RLock()
-	if ps := p.conns[key]; ps != nil && !p.closed.Load() {
-		ch := ps.waitCh(ctx, kind, l)
-		p.mu.RUnlock()
-		return ch
-	}
-	p.mu.RUnlock()
-
-	if p.closed.Load() {
-		return falseChan()
-	}
-	// 没有桶 ≡ idle 0、num 0。条件已经成立就不要建一只马上删掉的桶。
-	switch kind {
-	case waitIdleGeq, waitNumGeq:
-		if l <= 0 {
-			return trueChan()
-		}
-	case waitIdleLeq, waitNumLeq:
-		return trueChan()
-	default:
-		return falseChan()
-	}
-
-	p.ensureSweeper()
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed.Load() {
-		return falseChan()
-	}
-	if ctx != nil && ctx.Err() != nil {
-		return falseChan()
-	}
-	if p.conns == nil {
-		p.conns = make(map[string]*pools)
-	}
-	ps := p.conns[key]
-	if ps == nil {
-		ps = &pools{cp: p, present: make(map[net.Conn]struct{}, 8)}
-		p.conns[key] = ps
-	}
-	ch := ps.waitCh(ctx, kind, l)
-	p.dropIfEmpty(key, ps) // 没登记上 waiter（条件已满足或 ctx 已取消）就当场摘掉
-	return ch
-}
-
-func (p *Pool) WaitConnNumGeq(ctx context.Context, addr net.Addr, l int) <-chan bool {
-	return p.waitCond(ctx, waitNumGeq, addr, l)
-}
-
-func (p *Pool) WaitConnNumLeq(ctx context.Context, addr net.Addr, l int) <-chan bool {
-	return p.waitCond(ctx, waitNumLeq, addr, l)
-}
-
-func (p *Pool) WaitConnIdleGeq(ctx context.Context, addr net.Addr, l int) <-chan bool {
-	return p.waitCond(ctx, waitIdleGeq, addr, l)
-}
-
-func (p *Pool) WaitConnIdleLeq(ctx context.Context, addr net.Addr, l int) <-chan bool {
-	return p.waitCond(ctx, waitIdleLeq, addr, l)
-}
-
-func (p *pools) waitCh(ctx context.Context, kind uint8, l int) <-chan bool {
+func (p *pools) waitCh(ctx context.Context, kind uint8, l int) <-chan WaitStatus {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
-		return falseChan()
+		return falseChan(WaitContextDone)
 	}
 
 	k := waitKey{kind: kind, l: l}
-	w := &waiter{ch: make(chan bool, 1)}
-
 	p.mu.Lock()
-	closed := p.cp.closed.Load()
-	ok := !closed && p.condAt(k, p.idleCountLocked(), int(p.connTotalCount.Load()))
-	if closed || ok {
+	if ctx.Err() != nil {
 		p.mu.Unlock()
-		w.ch <- ok
-		return w.ch
+		return falseChan(WaitContextDone)
 	}
+	if p.cp.closed.Load() {
+		p.mu.Unlock()
+		return falseChan(WaitPoolClosed)
+	}
+	if st, done := p.evalLocked(k); done {
+		if p.cp.closed.Load() {
+			st = WaitPoolClosed
+		}
+		p.mu.Unlock()
+		return falseChan(st)
+	}
+	w := &waiter{ch: make(chan WaitStatus, 1)}
 	if ctx.Done() != nil {
-		w.stop = make(chan struct{}) // 仅可取消 ctx 才需监护协程
+		w.stop = make(chan struct{})
 	}
 	p.addWaitLocked(k, w)
 	p.mu.Unlock()
@@ -1402,10 +1471,112 @@ func (p *pools) waitCh(ctx context.Context, kind uint8, l int) <-chan bool {
 	return w.ch
 }
 
-func falseChan() chan bool {
-	ch := make(chan bool, 1)
-	ch <- false
+func (p *Pool) waitCond(ctx context.Context, kind uint8, addr net.Addr, l int) <-chan WaitStatus {
+	if addr == nil {
+		return falseChan(WaitErrOther)
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return falseChan(WaitContextDone)
+	}
+	if p.closed.Load() {
+		return falseChan(WaitPoolClosed)
+	}
+
+	key := addrKey(addr.Network(), addr.String())
+
+	// waitCh 必须在持有 Pool.mu 期间调用。先解锁再登记的话，
+	// CloseIdleConnection 会把桶摘掉，等待挂到已脱离 map 的旧 *pools 上，永远等不到通知。
+	// 无桶时 RLock 已挡住 withBucket 的建桶写锁，idle=0、num=0 与「键不存在」是同一事实。
+	p.mu.RLock()
+	ps := p.conns[key]
+	closed := p.closed.Load()
+	if ps != nil && !closed {
+		ch := ps.waitCh(ctx, kind, l)
+		p.mu.RUnlock()
+		return ch
+	}
+	if !closed {
+		if st, done := evalWait(kind, l, 0, 0, p.limits()); done {
+			p.mu.RUnlock()
+			if ctx != nil && ctx.Err() != nil {
+				return falseChan(WaitContextDone)
+			}
+			if p.closed.Load() {
+				return falseChan(WaitPoolClosed)
+			}
+			return falseChan(st)
+		}
+	}
+	p.mu.RUnlock()
+	if closed || p.closed.Load() {
+		return falseChan(WaitPoolClosed)
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return falseChan(WaitContextDone)
+	}
+
+	p.ensureSweeper()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed.Load() {
+		return falseChan(WaitPoolClosed)
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return falseChan(WaitContextDone)
+	}
+	if ps = p.conns[key]; ps != nil {
+		ch := ps.waitCh(ctx, kind, l)
+		p.dropIfEmpty(key, ps)
+		return ch
+	}
+	if st, done := evalWait(kind, l, 0, 0, p.limits()); done {
+		if p.closed.Load() {
+			return falseChan(WaitPoolClosed)
+		}
+		return falseChan(st)
+	}
+	if p.conns == nil {
+		p.conns = make(map[string]*pools)
+	}
+	ps = p.newBucket(key)
+	p.conns[key] = ps
+	ch := ps.waitCh(ctx, kind, l)
+	p.dropIfEmpty(key, ps) // 没登记上就当场摘掉，不等 sweeper
 	return ch
+}
+
+// WaitConnNumGeq 等到该地址连接数 >= l，向返回的 channel 发送一次状态。
+// channel 不会被关闭，不要用 range。
+//
+// addr 必须与 Dial 使用同一套 network/address，例如 &Addr{Net: network, Name: address}。
+// tcp4/tcp6 会归一成 tcp。不要传 conn.RemoteAddr()，解析后的 IP 是另一个桶。
+//
+// 计数含在途拨号。WaitSatisfied 只表示判定瞬间谓词为真，拨号失败会回滚，
+// 收到后动作前必须重读 NumConn。ctx 为 nil 则等到满足、不可能或池关闭。
+// MaxConn > 0 且 l > MaxConn 时立即 WaitErrOther；MaxConn <= 0 表示不限制。
+// 因上限收到 WaitErrOther 后，调高配置不会恢复本次等待，需要重新调用。
+func (p *Pool) WaitConnNumGeq(ctx context.Context, addr net.Addr, l int) <-chan WaitStatus {
+	return p.waitCond(ctx, waitNumGeq, addr, l)
+}
+
+// WaitConnNumLeq 等到该地址连接数 <= l。l < 0 立即 WaitErrOther。
+// 在途拨号已占桶计数，不会把「桶还没建出来」当成已经满足。其余约定同 WaitConnNumGeq。
+func (p *Pool) WaitConnNumLeq(ctx context.Context, addr net.Addr, l int) <-chan WaitStatus {
+	return p.waitCond(ctx, waitNumLeq, addr, l)
+}
+
+// WaitConnIdleGeq 等到该地址空闲连接数 >= l。
+// IdleConn > 0 且 l > IdleConn，或 MaxConn > 0 且 l > MaxConn，立即 WaitErrOther。
+// 其余约定同 WaitConnNumGeq。
+func (p *Pool) WaitConnIdleGeq(ctx context.Context, addr net.Addr, l int) <-chan WaitStatus {
+	return p.waitCond(ctx, waitIdleGeq, addr, l)
+}
+
+// WaitConnIdleLeq 等到该地址空闲连接数 <= l。l < 0 立即 WaitErrOther。
+// 其余约定同 WaitConnNumGeq。
+func (p *Pool) WaitConnIdleLeq(ctx context.Context, addr net.Addr, l int) <-chan WaitStatus {
+	return p.waitCond(ctx, waitIdleLeq, addr, l)
 }
 
 func (p *Pool) getPoolConn(network, address string) (net.Conn, []byte, time.Duration, int, error) {
@@ -1483,7 +1654,6 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// 先看关闭，再看后续的 ctx：两者同时成立时不能把关闭错误换掉。
 	if p.closed.Load() {
 		return nil, ErrConnPoolClosed
 	}
@@ -1521,15 +1691,29 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 		if p.closed.Load() {
 			return nil, ErrConnPoolClosed
 		}
-		putTimeout, putBS = p.conf().IdleTimeout, 0
-		conn, err = p.dialNew(ctx, network, address)
-		if err != nil {
-			return nil, err // 失败拨号到此为止，map 与桶计数都没动
+		if err = ctx.Err(); err != nil {
+			return nil, err
 		}
+		putTimeout, putBS = p.conf().IdleTimeout, 0
+		if err = p.checkAndIncConnNum(p.conf().MaxConn); err != nil {
+			return nil, err
+		}
+		// 先占桶再拨号，Wait 与 NumConn 才能看见在途连接。
+		// 失败必须先 releaseCount 再 dropBucket，顺序不能反。
 		ps, err = p.addConn(addr)
 		if err != nil {
-			conn.Close()
-			p.connNum.Add(-1)
+			p.releaseCount(nil, 1)
+			return nil, err
+		}
+		if p.closed.Load() {
+			p.releaseCount(ps, 1)
+			p.dropBucket(ps)
+			return nil, ErrConnPoolClosed
+		}
+		conn, err = p.dialNew(ctx, network, address)
+		if err != nil {
+			p.releaseCount(ps, 1)
+			p.dropBucket(ps)
 			return nil, err
 		}
 	}
@@ -1570,11 +1754,10 @@ func (p *Pool) DialContext(ctx context.Context, network, address string) (Conn, 
 	return cs, nil
 }
 
+// dialNew 只解析并拨号。
+// 调用方必须已经 checkAndIncConnNum 并 addConn；失败由调用方 releaseCount，这里不再改计数。
 func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, error) {
 	cfg := p.conf()
-	if err := p.checkAndIncConnNum(cfg.MaxConn); err != nil {
-		return nil, err
-	}
 	var (
 		addr net.Addr
 		err  error
@@ -1585,19 +1768,13 @@ func (p *Pool) dialNew(ctx context.Context, network, address string) (net.Conn, 
 		addr, err = ResolveAddr(network, address)
 	}
 	if err != nil {
-		p.connNum.Add(-1)
 		return nil, err
 	}
 	dialer := cfg.Dialer
 	if dialer == nil {
 		dialer = defaultDialer
 	}
-	conn, err := dialer.DialContext(ctx, network, addr.String())
-	if err != nil {
-		p.connNum.Add(-1)
-		return nil, err
-	}
-	return conn, nil
+	return dialer.DialContext(ctx, network, addr.String())
 }
 
 func (p *Pool) Get(addr net.Addr) (net.Conn, error) {
@@ -1806,6 +1983,8 @@ func (p *Pool) NumIdle(addr net.Addr) int {
 	return p.getIdleConnCount(addr.Network(), addr.String())
 }
 
+// NumConn 返回该地址当前占用的连接数，含空闲、在用和在途拨号。
+// 拨号失败会回滚。池已关闭或 addr 为 nil 时返回 0。
 func (p *Pool) NumConn(addr net.Addr) int {
 	if p.closed.Load() || addr == nil {
 		return 0
